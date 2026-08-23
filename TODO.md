@@ -332,3 +332,91 @@ Barnes-Hut/quadtree repulsion, which likely means a different crate (or
 a hand-rolled force step; see the unpublished `fdg` rewrite noted under
 Phase 4/CLAUDE.md's layout section) — not more caching. Revisit that
 only if the benchmark proves it's needed, not speculatively here.
+
+## Phase 10 — Typed links
+
+Not yet scoped in depth — deliberately deferred until Phase 6's
+untyped path-tracing has actually been used for a while and the
+limitation is felt firsthand, not built speculatively now. Recorded
+here (2026-08-23) so the idea isn't lost, not because it's next.
+
+Right now every edge means "these are connected," full stop. The real
+gap this closes: distinguishing an argument's *lineage* ("A led to B
+led to C") from its *rebuttal chain* ("A refutes B") when tracing paths
+— categorically more useful for historiography than undifferentiated
+connectivity once Phase 6's path queries are in daily use.
+
+- [ ] Adopt (and document in `CLAUDE.md`'s note-taking conventions) a
+      body-text convention for typing a link — `Refutes:: [[Note]]` on
+      its own line, Dataview's real inline-field syntax (`Key:: Value`),
+      verified against Dataview's own docs. Deliberately not a
+      frontmatter field: the parser only reads the body for links (see
+      CLAUDE.md), and this convention costs nothing to start using today
+      even before the parser understands it — plain `[[wikilinks]]`
+      still extract normally either way.
+- [ ] Parser: recognize an optional `Word::` prefix immediately before a
+      wikilink on the same line, capture it as the edge's relation
+- [ ] Graph model: edge weight changes from `Graph<Note, ()>` to
+      something like `Graph<Note, Option<String>>` (or a small closed
+      enum of known relation types) — **real ripple effect, not a small
+      change**: `graph::build()`, `layout::layout()`'s edge iteration,
+      and `render`'s edge-drawing all currently assume `()` edges and
+      would need updating
+- [ ] Decide how (or whether) relation type affects layout physics —
+      probably not at first; type should inform *query* results
+      (Phase 6 path/traversal output), not necessarily the force
+      simulation
+- [ ] Untyped links (no `Word::` prefix) stay valid and untyped —
+      backward compatible with every note already written
+
+**Done when:** not yet scoped — revisit once Phase 6 is in real use and
+this gap is actually felt, not before.
+
+## Phase 11 — `research.lua` bridge
+
+Also deferred, also recorded now so it isn't lost (2026-08-23). The
+most concretely motivated of the "what's after Phase 9" ideas discussed
+— not speculative feature-brainstorming, a real extension of a parser
+that already exists.
+
+The user's `research.lua` (`~/.config/nvim/lua/config/research.lua`) is
+a separate system, one stage downstream of this vault: it manages
+per-manuscript-project `research/*.md` snippet files (curated,
+rewritten-for-the-argument, atomic at the `##`-heading level) and
+tracks traceability into the actual Quarto manuscript prose via
+`<!-- research: <file> » <heading> -->` HTML-comment markers inserted
+at the point of use (`<leader>ri`) and queried in reverse (`<leader>ru`
+— "which manuscript sections cite this note"). That marker is plain,
+greppable text, structurally not that different from a wikilink.
+
+If the parser also recognized that marker convention, the graph could
+span three stages at once: raw Obsidian claim-notes → curated
+`research.lua` snippets → the actual manuscript paragraphs that cite
+them. Concretely new, not available in either system alone today:
+seeing a claim's whole lineage from first reading to published
+sentence, or querying "which of my original reading notes actually
+made it into print."
+
+- [ ] Decide vault scope: does this mean parsing a *second* root
+      directory (the manuscript project's `research/` + `sections/`)
+      alongside the Obsidian vault, or treating them as separate graphs
+      queried together? Not obvious which is right — think it through
+      at the start of this phase, don't assume
+- [ ] Parser: recognize `<!-- research: <file> » <heading> -->` as an
+      edge (from the citing manuscript section to the cited research
+      snippet's heading-anchor)
+- [ ] Decide how `research.lua`'s heading-level atomicity (multiple
+      snippets per file) maps onto this project's file-level node
+      identity (`graph::build()` currently treats one note = one graph
+      node) — these are different atomicity strategies for a similar
+      need, reconciling them is real design work, not a given
+- [ ] Don't automate the *curation* step (deciding what's worth pulling
+      from a reading note into a manuscript snippet) — that's real
+      editorial/scholarly judgment. Only automate the mechanical parts:
+      the marker as a graph edge, and (if genuinely useful) a query that
+      surfaces which claims are already curated vs. which have never
+      been used in any manuscript.
+
+**Done when:** not yet scoped — revisit once Phase 6 is working and it's
+clear this connection is something to reach for, not just something
+that sounds good in the abstract.
