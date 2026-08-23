@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod vault;
 
 use clap::Parser;
 
@@ -38,6 +39,19 @@ fn main() {
         std::process::exit(1);
     }
 
-    let vault = vault.canonicalize().unwrap_or(vault);
-    println!("Vault: {}", vault.display());
+    let vault_path = vault.canonicalize().unwrap_or(vault);
+    println!("Vault: {}", vault_path.display());
+
+    let parsed = match vault::parse(&vault_path) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    println!("Notes: {}", parsed.notes.len());
+    println!("Edges: {}", parsed.edges.len());
+    println!("Unresolved links: {}", parsed.unresolved_links);
+    println!("Orphan notes: {}", parsed.orphan_count());
 }

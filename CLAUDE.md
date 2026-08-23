@@ -28,15 +28,31 @@ of an Obsidian vault's note links — with a real graph model behind it
 
 ## Architecture (decided, in order of layers)
 
-1. **Parser** (first-party, nothing exists off the shelf for this): walk the
-   vault's `.md` files, extract `[[wikilink]]` targets (also consider plain
-   markdown `[text](file.md)` links), build a node/edge list. Not a
-   CommonMark construct, so a CommonMark parser (`pulldown-cmark`) wouldn't
-   catch wikilinks anyway — hand-rolled scan / `regex` over the raw file
-   text. `walkdir` or `ignore` for vault traversal (`ignore` gets
-   `.gitignore`-style exclusion for free, useful for skipping `.obsidian/`
-   and `.git/`). `gray_matter` for YAML frontmatter (`tags:`, `aliases:`) —
-   needed early since MVP step 5 (filter by tag/folder) depends on it.
+1. **Parser** (first-party, nothing exists off the shelf for this; done —
+   `src/vault/`): walk the vault's `.md` files (`walkdir`, skipping
+   `.obsidian/`/`.git/`), extract `[[wikilink]]` targets (with optional
+   `#heading`/`|alias`, and a leading `!` for embeds) plus plain markdown
+   `[text](file.md)` links, build a node/edge list. Not a CommonMark
+   construct, so a CommonMark parser (`pulldown-cmark`) wouldn't catch
+   wikilinks anyway — hand-rolled `regex` over the raw file text.
+   `gray_matter` for YAML frontmatter (`tags:`, `aliases:`) — captured now,
+   consumed starting Phase 7 (filter by tag/folder).
+   - **Code-span stripping is required, not optional**: a naive regex scan
+     can't tell a real `[[wikilink]]` from one written as
+     `` `[[documentation]]` `` inside backticks. Fenced blocks and inline
+     spans are stripped before the link regexes run — discovered because
+     the fixture vault's own documentation notes (`case-test.md`,
+     `_fixture-notes.md`) do exactly that, and would otherwise be
+     misparsed.
+   - **Link resolution is case-insensitive.** Path-qualified targets
+     (contain `/`) match exactly; bare basenames match by filename alone.
+     An ambiguous bare basename (two notes share it, e.g. the fixture
+     vault's two `project-alpha.md` files) resolves to whichever
+     candidate's full relative path sorts first alphabetically —
+     deterministic, simple, not fully Obsidian-faithful, stated once.
+   - **Target classification is by extension**: no extension or `.md` →
+     note reference (resolved/unresolved); any other extension (`.png`,
+     etc.) → attachment, never an edge, never counted as a broken link.
 2. **Graph model / query**: [`petgraph`](https://github.com/petgraph/petgraph)
    (confirmed on crates.io: 0.8.3, actively maintained) — in-memory graph
    with real traversal (BFS/DFS, shortest path, connected components, N-hop
@@ -190,9 +206,9 @@ match rather than letting them drift apart.
 
 ## Starting point for a fresh session
 
-Check `TODO.md` for the current phase. As of this writing Phases 0–1 (hello
-world CLI, CLI args & config) are done — next up is Phase 2 (the vault
-parser, tested against `~/vaults/obg-test`), then `petgraph` → `fdg-sim`
-layout → one static `ratatui` Braille frame before adding physics tuning,
-camera interaction, or query features. That thin vertical slice is the
-thing to prove first.
+Check `TODO.md` for the current phase. As of this writing Phases 0–2
+(hello world CLI, CLI args & config, vault parser) are done — next up is
+Phase 3 (`petgraph` graph model from the parser's node/edge list), then
+`fdg-sim` layout → one static `ratatui` Braille frame before adding
+physics tuning, camera interaction, or query features. That thin vertical
+slice is the thing to prove first.

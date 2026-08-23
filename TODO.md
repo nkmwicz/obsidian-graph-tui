@@ -31,7 +31,7 @@ Vault path must be configurable, not hardcoded (CLAUDE.md, "Vault access").
 **Done when:** `obg /path/to/vault` and a config-file-supplied path both
 resolve to the same vault path, with a clean error on a bad path.
 
-## Phase 2 — Vault parser
+## Phase 2 — Vault parser ✅
 
 First-party — nothing off the shelf handles Obsidian wikilinks. Test
 against `~/vaults/obg-test/`, a purpose-built fixture vault (legend at
@@ -40,18 +40,28 @@ self-loop, missing frontmatter, case-mismatched links, alias/heading/embed
 link forms, a non-edge external URL, a duplicate basename in two folders,
 and an empty `.obsidian/` that must be skipped.
 
-- [ ] Walk the vault's `.md` files (`walkdir` or `ignore`; skip `.obsidian/`,
+- [x] Walk the vault's `.md` files (`walkdir` or `ignore`; skip `.obsidian/`,
       `.git/`)
-- [ ] Extract `[[wikilink]]`, `[[wikilink|alias]]`, `[[note#heading]]`,
+- [x] Extract `[[wikilink]]`, `[[wikilink|alias]]`, `[[note#heading]]`,
       `![[embed]]`
-- [ ] Extract plain markdown `[text](file.md)` links
-- [ ] Parse YAML frontmatter (`gray_matter`) for `tags:` / `aliases:`
-- [ ] Produce a node/edge list (in-memory structs, pre-`petgraph`)
-- [ ] Error out (clear message, exit 1) if the resolved vault path
+- [x] Extract plain markdown `[text](file.md)` links
+- [x] Parse YAML frontmatter (`gray_matter`) for `tags:` / `aliases:`
+- [x] Produce a node/edge list (in-memory structs, pre-`petgraph`)
+- [x] Error out (clear message, exit 1) if the resolved vault path
       contains zero `.md` files — Phase 1 only validates that the path is
       a directory (e.g. `obg .` from this repo "succeeds" and resolves to
       the repo root), so the parser is where a not-actually-a-vault path
       needs to get caught, before it silently produces an empty graph
+
+Also required, discovered during implementation (see `CLAUDE.md`): a
+naive regex scan can't tell a real `[[wikilink]]` from one written as
+`` `[[documentation]]` `` inside backticks — code-span/fence stripping is
+now a required pre-pass, not optional polish. Two fixture-vault authoring
+bugs surfaced by this while verifying hand-computed counts (`index.md`
+accidentally linking `[[orphan]]` for real instead of describing it in
+backticks; `aliases-and-headings.md` testing `[[CaseTest]]` against actual
+file `case-test.md` — a missing hyphen, not a casing difference) — both
+fixed in the vault itself.
 
 **Done when:** running against `~/vaults/obg-test/` produces the correct
 node/edge count and correctly handles every edge case listed in
