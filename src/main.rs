@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod graph;
 mod layout;
+mod render;
 mod vault;
 
 use clap::Parser;
@@ -63,4 +64,9 @@ fn main() {
 
     let positions = layout::layout(&graph);
     println!("Laid out {} node positions", positions.len());
+
+    if let Err(e) = render::run(&graph, &positions) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
 }

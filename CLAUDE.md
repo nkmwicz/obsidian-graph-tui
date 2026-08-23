@@ -92,7 +92,22 @@ of an Obsidian vault's note links — with a real graph model behind it
    links, matching Obsidian's own graph view (a single undirected line
    either way). Direction itself is untouched in `graph::Graph` — this
    dedup only affects what feeds the physics, not later traversal/backlink
-   queries (Phase 7). The `grantshandy/fdg` repo has since been rewritten
+   queries (Phase 7). **Critical correction, found in Phase 5:** a
+   self-loop makes a node its own neighbor in the physics graph, and
+   `fdg-sim`'s Fruchterman-Reingold attraction divides by node-to-neighbor
+   distance — zero, for a node and itself — producing `NaN` that spreads
+   to every other node's position within a handful of steps (each step's
+   repulsion/attraction reads every other node's position). This silently
+   NaN'd all 14 positions for the full `~/vaults/obg-test` fixture (which
+   has a real self-loop) — the Phase 4 unit tests didn't catch it because
+   they only asserted position *count*, never that the values were
+   finite; it only surfaced once Phase 5 actually tried to render
+   something. Fixed by dropping self-loops in `undirected_edge_pairs()`
+   entirely, not just deduping them — they have no visible geometry in a
+   wireframe anyway (see the rendering section below), so nothing is lost
+   by excluding them from the physics. This is the concrete case for why
+   CLAUDE.md's "prove the pipeline end-to-end" ordering matters: a passing
+   unit test suite had already called Phase 4 done. The `grantshandy/fdg` repo has since been rewritten
    into a new unified `fdg` crate (nalgebra-based, const-generic over N
    dimensions, still actively developed as of March 2025) — but that
    rewrite has **never been published to crates.io**, only usable via a
@@ -129,6 +144,27 @@ of an Obsidian vault's note links — with a real graph model behind it
    (`Vaishnav-Sabari-Girish/ComChan`, an unrelated serial-comm tool), which
    means either bad metadata or a low-quality/squatted crate. Don't add
    either without re-vetting.
+   - **Built in Phase 5** (`src/render/mod.rs`): `render::project()` uses
+     `Surface3D::project`'s exact rotate-Z-then-rotate-X + perspective-
+     divide scheme from the reference example, at a fixed camera angle
+     (Phase 6 makes it live). Canvas `x_bounds`/`y_bounds` are computed
+     from the actual projected points (10% margin) rather than fixed,
+     unlike the reference example — its input is pre-normalized to a
+     known range, but `fdg-sim` positions are in arbitrary simulation
+     units that scale with graph size, so the viewport has to fit
+     whatever the layout actually produced. Uses `ratatui::run()` (new in
+     0.30.0) for terminal init/draw/restore rather than hand-rolling it,
+     and `ratatui::crossterm` (re-exported) for the wait-for-any-keypress
+     step rather than adding a direct `crossterm` dependency — item 5
+     below still applies once Phase 6 needs a real input loop.
+   - **How this was actually verified, not just "didn't panic":** no
+     screenshot tool is available in this environment, so a throwaway
+     Python harness (`pty.openpty()` + a minimal ANSI/VT grid emulator,
+     not committed to the repo) drove the release binary in a real pty,
+     sized the window, captured the raw escape-sequence output, and
+     rendered it back to a text grid to inspect directly. This is what
+     caught the Phase 4 self-loop `NaN` bug above — the unit test suite
+     alone had already called that phase done.
 5. **Input**: `crossterm` (confirmed: 0.29.0, actively maintained; also a
    transitive dep of `ratatui`) for live keyboard-driven camera
    orbit/zoom/pan.
@@ -253,9 +289,8 @@ match rather than letting them drift apart.
 
 ## Starting point for a fresh session
 
-Check `TODO.md` for the current phase. As of this writing Phases 0–4
+Check `TODO.md` for the current phase. As of this writing Phases 0–5
 (hello world CLI, CLI args & config, vault parser, `petgraph` graph model,
-`fdg-sim` 3D layout) are done — next up is Phase 5: one static `ratatui`
-Braille frame rendering the laid-out graph, before adding physics tuning,
-camera interaction, or query features. That thin vertical slice is the
-thing to prove first.
+`fdg-sim` 3D layout, static `ratatui` Braille render) are done — next up
+is Phase 6: live camera controls (orbit/zoom/pan via `crossterm`) over
+the same static frame, before query/traversal or layout-caching features.

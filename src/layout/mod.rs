@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use fdg_sim::{force, Dimensions, ForceGraph, ForceGraphHelper, Simulation, SimulationParameters};
+use fdg_sim::{Dimensions, ForceGraph, ForceGraphHelper, Simulation, SimulationParameters, force};
 use petgraph::graph::{Graph, NodeIndex};
 
 use crate::vault::Note;
@@ -73,16 +73,32 @@ pub fn layout(graph: &Graph<Note, ()>) -> HashMap<NodeIndex, Position> {
 }
 
 /// Collapses edges between the same pair of nodes down to one unordered
-/// pair each. Obsidian links are directional, but a note reciprocally
-/// linking back (`A -> B` and `B -> A`) is common and shouldn't pull the
-/// two notes together twice as hard as a one-way link would: `fdg-sim`'s
-/// `ForceGraph` is an undirected multigraph, so feeding it both directed
-/// edges would add two parallel edges, and its Fruchterman-Reingold
-/// attraction force sums once per parallel edge between neighbors.
+/// pair each, and drops self-loops entirely. Obsidian links are
+/// directional, but a note reciprocally linking back (`A -> B` and
+/// `B -> A`) is common and shouldn't pull the two notes together twice as
+/// hard as a one-way link would: `fdg-sim`'s `ForceGraph` is an undirected
+/// multigraph, so feeding it both directed edges would add two parallel
+/// edges, and its Fruchterman-Reingold attraction force sums once per
+/// parallel edge between neighbors.
+///
+/// Self-loops are dropped, not just deduped, because they are actively
+/// destructive to the simulation, not merely redundant: a self-loop makes
+/// a node its own neighbor, and `fdg-sim`'s attraction force divides by
+/// the distance between a node and its neighbor — zero, for a node and
+/// itself — producing `NaN` that spreads to every other node's position
+/// within a handful of simulation steps (every node's repulsion/attraction
+/// each step reads every other node's position). Confirmed directly: the
+/// full `~/vaults/obg-test` fixture (which has a real self-loop,
+/// `self-loop.md`) rendered all 14 positions as `NaN` before this fix.
+/// A self-loop has no visible geometry in a wireframe regardless (see
+/// TODO.md Phase 5), so there's nothing lost by excluding it here.
 fn undirected_edge_pairs(graph: &Graph<Note, ()>) -> HashSet<(NodeIndex, NodeIndex)> {
     let mut pairs = HashSet::with_capacity(graph.edge_count());
     for edge in graph.edge_indices() {
         let (from, to) = graph.edge_endpoints(edge).unwrap();
+        if from == to {
+            continue;
+        }
         pairs.insert(if from <= to { (from, to) } else { (to, from) });
     }
     pairs
@@ -129,6 +145,26 @@ mod tests {
     }
 
     #[test]
+    fn every_position_is_finite() {
+        // Regression test: a self-loop used to poison every node's
+        // position with NaN (see `undirected_edge_pairs`'s doc comment) —
+        // a bug the other tests here didn't catch because they only
+        // checked position *count*, not that the values were usable.
+        let mut graph = Graph::new();
+        let a = graph.add_node(note("a.md"));
+        let b = graph.add_node(note("b.md"));
+        let c = graph.add_node(note("self-loop.md"));
+        graph.add_edge(a, b, ());
+        graph.add_edge(c, c, ());
+
+        let positions = layout(&graph);
+
+        for pos in positions.values() {
+            assert!(pos.x.is_finite() && pos.y.is_finite() && pos.z.is_finite());
+        }
+    }
+
+    #[test]
     fn mutual_link_collapses_to_a_single_undirected_edge() {
         let mut graph = Graph::new();
         let a = graph.add_node(note("a.md"));
@@ -137,6 +173,17 @@ mod tests {
         graph.add_edge(b, a, ());
 
         assert_eq!(undirected_edge_pairs(&graph).len(), 1);
+    }
+
+    #[test]
+    fn self_loops_are_excluded_from_the_physics_graph() {
+        let mut graph = Graph::new();
+        let a = graph.add_node(note("a.md"));
+        let b = graph.add_node(note("b.md"));
+        graph.add_edge(a, a, ());
+        graph.add_edge(a, b, ());
+
+        assert_eq!(undirected_edge_pairs(&graph), HashSet::from([(a, b)]));
     }
 
     #[test]

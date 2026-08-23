@@ -123,23 +123,47 @@ nodes land at distinct positions, a self-loop doesn't panic) plus
 `cargo run --release -- ~/vaults/obg-test` producing 14 positions for 14
 notes in ~20ms.
 
-## Phase 5 — Static render
+**Correction, found in Phase 5:** those unit tests only checked position
+*count*, not that the values were usable — every position for the full
+fixture vault was actually `NaN`. A self-loop (`self-loop.md`) makes a
+node its own neighbor in the physics graph, and `fdg-sim`'s attraction
+force divides by node-to-neighbor distance, which is zero for a node and
+itself; the resulting `NaN` spreads to every other node within a handful
+of steps, since each step's repulsion/attraction reads every other
+node's position. Only surfaced by actually trying to render something
+(Phase 5) — no unit test had asserted finiteness. Fixed by excluding
+self-loops from the physics graph entirely in
+`undirected_edge_pairs()` (`src/layout/mod.rs`) — they have no visible
+geometry anyway (see Phase 5's note below). New regression test
+(`every_position_is_finite`) covers it going forward.
+
+## Phase 5 — Static render ✅
 
 First real visual milestone — prove the whole pipeline end-to-end.
 
-- [ ] Study `ratatui`'s `volatility-surface` and `canvas` examples
-      (`examples/apps/` in the ratatui repo)
-- [ ] `ratatui` `Canvas` widget + `Marker::Braille`, hand-rolled projection
-- [ ] Draw the laid-out graph as a single static wireframe frame (nodes +
+- [x] Study `ratatui`'s `volatility-surface` and `canvas` examples
+      (`examples/apps/` in the ratatui repo) — used `Surface3D::project`'s
+      rotate-Z-then-rotate-X + perspective-divide scheme directly as the
+      reference for `render::project()`
+- [x] `ratatui` `Canvas` widget + `Marker::Braille`, hand-rolled
+      projection — `src/render/mod.rs`
+- [x] Draw the laid-out graph as a single static wireframe frame (nodes +
       edges)
 
 **Done when:** `obg /path/to/vault` renders a recognizable 3D graph shape
-in the terminal, once, no interaction yet.
+in the terminal, once, no interaction yet. ✅ Verified: unit tests for
+the pure projection/bounds math in `src/render/mod.rs`, plus an actual
+run against `~/vaults/obg-test` in a real pty (captured and rendered
+through a minimal ANSI/VT emulator to inspect the output directly) —
+produced a recognizable connected wireframe shape, not just "didn't
+crash." That real-render check is what caught the Phase 4 `NaN` bug
+above; the pipeline wouldn't have proven itself end-to-end without it.
 
 Note: `~/vaults/obg-test/self-loop.md`'s self-referencing edge (verified
 in Phase 3) has no visible geometry in a wireframe — a node linking to
-itself draws nothing. That's expected, not a rendering bug; don't spend
-time "fixing" it here.
+itself draws nothing. That's expected, not a rendering bug. It's also now
+excluded from the physics graph entirely (see the Phase 4 correction
+above), so there's nothing left to "fix" here.
 
 ## Phase 6 — Camera interaction
 
