@@ -30,50 +30,78 @@ of an Obsidian vault's note links — with a real graph model behind it
 
 1. **Parser** (first-party, nothing exists off the shelf for this): walk the
    vault's `.md` files, extract `[[wikilink]]` targets (also consider plain
-   markdown `[text](file.md)` links), build a node/edge list.
+   markdown `[text](file.md)` links), build a node/edge list. Not a
+   CommonMark construct, so a CommonMark parser (`pulldown-cmark`) wouldn't
+   catch wikilinks anyway — hand-rolled scan / `regex` over the raw file
+   text. `walkdir` or `ignore` for vault traversal (`ignore` gets
+   `.gitignore`-style exclusion for free, useful for skipping `.obsidian/`
+   and `.git/`). `gray_matter` for YAML frontmatter (`tags:`, `aliases:`) —
+   needed early since MVP step 5 (filter by tag/folder) depends on it.
 2. **Graph model / query**: [`petgraph`](https://github.com/petgraph/petgraph)
-   — in-memory graph with real traversal (BFS/DFS, shortest path, connected
-   components, N-hop neighborhoods). **Not Kùzu for v1** — deliberately
-   deferred, see "Explicitly out of scope" below. Swappable later without
-   touching the layout or rendering layers.
-3. **3D layout**: [`fdg`](https://github.com/grantshandy/fdg) /
-   [`fdg-sim`](https://crates.io/crates/fdg-sim) — force-directed graph
-   layout, works in N dimensions (3D), converts directly from a
-   `petgraph::Graph`.
-4. **Rendering**: [`ratatui`](https://ratatui.rs/), using the `Canvas`
-   widget's `Marker::Braille` mode (2×4 sub-cell resolution — no GPU, no
-   terminal graphics protocol dependency, works in any terminal, not just
-   Kitty). Reference implementation to study first: ratatui's own
-   `volatility-surface` example (`cargo run -p volatility-surface` in the
-   ratatui repo) — it already does perspective projection + interactive
-   rotate/zoom via Canvas+Braille. Also evaluate
-   [`ratatui-3d`](https://lib.rs/crates/ratatui-3d) (renders 3D scenes as a
-   ratatui widget, has a Braille high-res render mode) and
-   `ratatui-wireframe` (rotating 3D wireframe models specifically) as
-   possible off-the-shelf building blocks before hand-rolling projection math.
-5. **Input**: `crossterm` for live keyboard-driven camera orbit/zoom/pan.
+   (confirmed on crates.io: 0.8.3, actively maintained) — in-memory graph
+   with real traversal (BFS/DFS, shortest path, connected components, N-hop
+   neighborhoods). **Not Kùzu for v1** — deliberately deferred, see
+   "Explicitly out of scope" below. Swappable later without touching the
+   layout or rendering layers.
+3. **3D layout**: [`fdg-sim`](https://crates.io/crates/fdg-sim) — **not
+   `fdg`**, that crate name doesn't exist on crates.io. `fdg-sim` 0.9.1 is
+   the actual published crate (from the `grantshandy/fdg` GitHub repo's
+   `old` branch); last published Dec 2022 but verified working: it has
+   `Dimensions::Two`/`Dimensions::Three` and converts directly from a
+   `petgraph::Graph`. The `grantshandy/fdg` repo has since been rewritten
+   into a new unified `fdg` crate (nalgebra-based, const-generic over N
+   dimensions, still actively developed as of March 2025) — but that
+   rewrite has **never been published to crates.io**, only usable via a
+   `git = "..."` Cargo dependency. Use published `fdg-sim = "0.9"` for v1 to
+   avoid a git dependency; revisit the rewrite only if `fdg-sim` proves
+   insufficient.
+4. **Rendering**: [`ratatui`](https://ratatui.rs/) (confirmed: 0.30.2,
+   actively maintained), using the `Canvas` widget's `Marker::Braille` mode
+   (2×4 sub-cell resolution — no GPU, no terminal graphics protocol
+   dependency, works in any terminal, not just Kitty). Reference
+   implementation to study first: ratatui's own `volatility-surface`
+   example (`examples/apps/volatility-surface` in the ratatui repo, still
+   present in the current tree) — it already does perspective projection +
+   interactive rotate/zoom via Canvas+Braille. **Decision: hand-roll
+   projection math following that example rather than depending on
+   `ratatui-3d` or `ratatui-wireframe`.** Both were considered and rejected:
+   both are tiny/unproven (525 and ~400 downloads, `ratatui-3d` first
+   published ~March 2026, `ratatui-wireframe` ~June 2026), and
+   `ratatui-wireframe` specifically has a red flag — its crates.io
+   `repository` field points to an unrelated GitHub repo
+   (`Vaishnav-Sabari-Girish/ComChan`, an unrelated serial-comm tool), which
+   means either bad metadata or a low-quality/squatted crate. Don't add
+   either without re-vetting.
+5. **Input**: `crossterm` (confirmed: 0.29.0, actively maintained; also a
+   transitive dep of `ratatui`) for live keyboard-driven camera
+   orbit/zoom/pan.
 
-> All of the above crates were identified via web research in the planning
-> conversation, not verified hands-on — re-check current version, API shape,
-> and maintenance status before committing to any of them.
+> Crate names/versions above were verified against crates.io + GitHub on
+> 2026-08-22 (not just identified via web research) — see corrections to
+> `fdg`→`fdg-sim` and the rejection of `ratatui-3d`/`ratatui-wireframe`
+> above. Versions will drift over time; re-check before pinning in
+> `Cargo.toml` if this file is stale relative to the date above.
 
 ## MVP scope, in order
 
 1. Parse a given vault path into a `petgraph` graph.
-2. Force-directed 3D layout via `fdg`.
+2. Force-directed 3D layout via `fdg-sim`.
 3. Static rendered view in `ratatui` (Braille wireframe, no interaction yet)
    — prove the rendering pipeline end to end first.
 4. Add camera controls (orbit/zoom via keyboard).
 5. Add basic query/traversal: local graph around one note (N-hop
    neighborhood), filter by tag/folder.
-6. *(Later, not v1)* Swap `petgraph` for an embedded graph DB
-   ([Kùzu](https://kuzudb.github.io/docs/) — Cypher, single-file, no
-   server, native Rust bindings) only if real ad-hoc query needs outgrow
-   simple neighborhood/filter traversal.
+6. *(Later, not v1 — but a confirmed direction, not just a maybe)*
+   Introduce an embedded graph DB ([Kùzu](https://kuzudb.github.io/docs/) —
+   Cypher, single-file, no server, native Rust bindings) alongside or in
+   place of `petgraph`, to expose ad-hoc Cypher querying from within the
+   TUI. See `TODO.md` Phase 8 — scoped further once Phases 0–7 there surface
+   concrete query needs `petgraph` traversal can't cover.
 
 ## Explicitly out of scope for v1
 
-- Kùzu/Cypher querying — see above, revisit only if needed.
+- Kùzu/Cypher querying for v1 specifically — see above, it's a confirmed
+  future phase (`TODO.md` Phase 8), just not part of the initial build.
 - Dataview-equivalent dynamic queries, or Obsidian plugin-ecosystem parity.
 - Pre-rendered rotating-frame animation tricks for terminals without Braille
   support — not worth the complexity for a personal tool.
@@ -119,9 +147,51 @@ of an Obsidian vault's note links — with a real graph model behind it
   tool runs.
 - Vault path must be configurable (CLI arg and/or config file), not
   hardcoded to any one location.
+- **Rejected: `obsidian-cli`.** Originally considered as the vault-access
+  layer, but it requires an actual Obsidian.app install to function against
+  — a hard dependency this project explicitly avoids (see above: nothing
+  here should assume Obsidian.app is running). Reading the vault directly
+  off disk with first-party Rust parsing keeps the tool fast and removes
+  that dependency entirely; this is why the parser is first-party rather
+  than a wrapper around existing Obsidian tooling.
+- **Test vault**: `~/vaults/obg-test/` — a purpose-built fixture vault
+  (separate from the user's real vaults also under `~/vaults/`), matching
+  real vault frontmatter conventions (`id`/`aliases`/`tags`). Covers the
+  parser edge cases deliberately: orphan node, broken/unresolved link,
+  self-loop, missing frontmatter, case-mismatched links, alias/heading/embed
+  link forms, plain markdown links (incl. one external URL that must NOT
+  become a graph edge), a duplicate basename in two folders (ambiguous
+  resolution), and an empty `.obsidian/` dir that must be skipped during
+  traversal. Full legend of what each file tests is in the vault itself at
+  `~/vaults/obg-test/_fixture-notes.md`. Use this vault for Phase 2+
+  parser development and testing (see `TODO.md`).
+
+## TODO.md is the source of direction — keep it current
+
+`TODO.md` (repo root) is the authoritative, living roadmap: a phased,
+checkable to-do list from the hello-world CLI through Cypher querying. This
+file (`CLAUDE.md`) holds the *why* and the architectural decisions; `TODO.md`
+holds *what's next and what's done*. When the two would otherwise disagree
+on sequencing, `TODO.md` wins — update this file's "MVP scope" section to
+match rather than letting them drift apart.
+
+- At the start of any work session, check `TODO.md` to see which phase is
+  in progress or next — don't re-derive the plan from conversation memory.
+- Update `TODO.md` in the same session as the work it describes: check off
+  completed items, add sub-tasks discovered mid-work, adjust phase
+  boundaries if reality diverges from the original plan. A stale TODO.md is
+  worse than none — don't let completed work go unchecked or new decisions
+  go unrecorded.
+- If a decision changes direction (a crate swap, a rejected approach, a
+  scope change), record it in both places: the reasoning in `CLAUDE.md`
+  (as this file already does for e.g. the `fdg`→`fdg-sim` correction and
+  the `obsidian-cli` rejection), the resulting task-list change in
+  `TODO.md`.
 
 ## Starting point for a fresh session
 
-Get the parser → `petgraph` → `fdg` layout → one static `ratatui` Braille
-frame working end to end before adding physics tuning, camera interaction,
-or query features. That thin vertical slice is the thing to prove first.
+Check `TODO.md` for the current phase. As of this writing Phase 0 (hello
+world CLI) is done — next up is Phase 1 (CLI args & config), then the
+parser → `petgraph` → `fdg-sim` layout → one static `ratatui` Braille frame
+before adding physics tuning, camera interaction, or query features. That
+thin vertical slice is the thing to prove first.
