@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use resolve::{NoteIndex, Outcome};
 
+#[derive(Clone)]
 pub struct Note {
     pub path: PathBuf,
     // Captured since Phase 2; consumed starting Phase 6 (excluding

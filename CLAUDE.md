@@ -444,9 +444,36 @@ vault or parser — a real design constraint for `TODO.md` Phase 8
      expose one against. Not reopened as a goal; if arbitrary querying is
      wanted later, it would mean something else entirely (e.g. a small
      expression language over `petgraph`), unscoped for now.
-5. Add camera controls (orbit/zoom via keyboard). See `TODO.md` Phase 7.
-6. Add basic query/traversal: local graph around one note (N-hop
-   neighborhood), filter by tag/folder. See `TODO.md` Phase 8.
+5. **Camera controls — done.** Orbit (arrows/hjkl), pan (`wasd`), zoom
+   (`+`/`-`), reset (`r`), quit (`q`/`Esc`/`Ctrl-C`) — all keyboard-driven,
+   `src/render/mod.rs`'s `Camera`/`interactive_loop`. Live re-render means
+   recompute projection under the new camera state → re-rasterize with
+   `tiny-skia` → re-print via `viuer` each frame, redrawn only on input
+   (blocking on `crossterm::event::read()`, no busy-poll — nothing
+   animates on its own between keypresses). Terminal state (raw mode +
+   alternate screen) is restored via an RAII guard (`TerminalGuard`) so a
+   panic mid-orbit can't strand the terminal. When stdout isn't a real tty
+   (piped output, this project's own test/CI environment — confirmed via
+   `std::io::IsTerminal`), falls back to Phase 5's original single
+   static-frame print instead of failing to enter raw mode. See
+   `TODO.md` Phase 7 for the zoom-safety margin this reopens if tuned
+   carelessly (`ZOOM_MAX` vs. the Phase 5 perspective-divide bug).
+6. **Query/traversal (local view) — done.** N-hop neighborhood centered
+   on a note, filter by tag/folder, jump-to-note search — all live
+   interactive session state (`/` search, `t` tag, `f` folder, `0` clear,
+   `[`/`]` hop count), not CLI flags, since Phase 8's own "done when"
+   condition was narrowing the view "without restarting the tool." New
+   `src/view.rs` (`View`/`visible_nodes()`, undirected BFS reusing
+   `algo::shortest_path`'s traversal pattern) and `graph::
+   induced_subgraph()` build an actual smaller `Graph<Note, ()>` for the
+   current view, which `render`'s interactive loop re-lays-out via
+   `layout::layout()` and caches (`ViewCache`) keyed by the `View` that
+   produced it — recomputed only when the view changes, not every
+   camera-only redraw, and an unfiltered view keeps no cache at all so
+   the common case pays nothing extra. Jump-to-note's "fuzzy search" is
+   deliberately just a case-insensitive substring match (`render::
+   prompt_matches()`), not a real fuzzy algorithm or crate — see
+   `TODO.md` Phase 8 for why that's judged sufficient for now.
 7. Layout caching & performance: persist computed positions so an
    unchanged vault reloads instead of rerunning the simulation; replace
    the fixed 1000-step budget with a convergence check. See `TODO.md`
@@ -549,16 +576,19 @@ match rather than letting them drift apart.
 
 ## Starting point for a fresh session
 
-Check `TODO.md` for the current phase. As of this writing Phases 0–6
+Check `TODO.md` for the current phase. As of this writing Phases 0–8
 (hello world CLI, CLI args & config, vault parser, `petgraph` graph
 model, `fdg-sim` 3D layout, static render — now `tiny-skia`+`viuer`
 raster/Kitty-protocol, not the original `ratatui` Braille attempt; see
-"Rendering" above — and graph algorithms: PageRank, Louvain community
+"Rendering" above — graph algorithms: PageRank, Louvain community
 detection, path tracing, all hand-rolled over `petgraph` in
 `src/algo/mod.rs` after an embedded Cypher graph DB was tried and
 abandoned — see `TODO.md` Phase 6 and this file's point 4 above for the
-full story) are done — next up is **Phase 7: camera interaction**
-(orbit/zoom via keyboard), reprioritized behind Phase 6 once the
-project's real motivating use case (a historian's monograph research
-notes — see "Why" above) made clear the graph-algorithms phase was where
-the actual value was, not rendering/camera polish.
+full story — camera interaction: keyboard-driven orbit/zoom/pan over the
+raster renderer, see point 5 above and `TODO.md` Phase 7 — and query/
+traversal: a live N-hop neighborhood view, tag/folder filtering, and
+jump-to-note search, all interactive session state layered on the same
+render loop, see point 6 above and `TODO.md` Phase 8) are done — next up
+is **Phase 9: layout caching & performance**, placed last deliberately
+per this file's "prove the pipeline first" philosophy, not because it's
+unimportant.

@@ -308,7 +308,7 @@ that's plausibly useful, not just "doesn't crash." ✅ Verified against
 plausible, non-degenerate output; the no-subcommand render path is
 unchanged; full test suite (53 tests) and `cargo clippy` both clean.
 
-## Phase 7 — Camera interaction
+## Phase 7 — Camera interaction ✅
 
 Written before the Phase 5 rendering pivot (`CLAUDE.md`'s "Rendering"
 section) — re-read that before starting. "Live re-render" no longer
@@ -319,13 +319,63 @@ frame, which has different performance and terminal-state implications
 today doesn't use either) worth thinking through at the start of this
 phase, not assumed from the checklist below.
 
-- [ ] `crossterm` keyboard input loop
-- [ ] Orbit, zoom, pan; live re-render on input
-- [ ] Clean quit (`q` / `Ctrl-C`), terminal state restored on exit/panic
+- [x] `crossterm` keyboard input loop — via `ratatui::crossterm` (already
+      a transitive dep, no new crate needed), blocking on `event::read()`
+      each frame rather than polling: there's nothing to animate on its
+      own, so redraw-on-input is the whole loop.
+- [x] Orbit, zoom, pan; live re-render on input — `render::Camera`
+      (`src/render/mod.rs`): arrows/hjkl orbit, `wasd` pan, `+`/`-` zoom,
+      `r` resets to defaults. Zoom is a *divisor* on the data-derived
+      camera distance (`effective_camera_distance`), not an absolute
+      distance, so 1.0 always means "no zoom" at any graph scale; pan is
+      stored as a fraction of the current viewport half-span
+      (`apply_pan`), not an absolute offset, so a pan step feels the same
+      size on screen regardless of zoom level.
+- [x] Clean quit (`q` / `Ctrl-C`), terminal state restored on exit/panic —
+      `q`, `Esc`, and `Ctrl-C` (caught as a plain `KeyEvent` since raw
+      mode disables the OS's usual SIGINT translation) all quit.
+      `render::TerminalGuard` is an RAII guard: enters raw mode + the
+      alternate screen on construction, restores both on `Drop` — which
+      Rust runs on an unwinding panic as well as a normal return, so a
+      mid-orbit panic can't strand the user's terminal in raw mode.
 
-**Done when:** you can freely orbit around the graph and it stays legible.
+**Done when:** you can freely orbit around the graph and it stays
+legible. ✅ Verified: `cargo test`/`cargo clippy` clean (60 tests,
+covering key bindings, zoom/pan clamping, and a zoom-safety regression —
+see below). ✅ **Eyes-verified in the user's real Kitty terminal**
+(2026-08-23, after Phase 8 landed): confirmed both that the interactive
+overlay text is legible and that the live camera/view behavior actually
+works as intended.
 
-## Phase 8 — Query & traversal
+**A `!std::io::IsTerminal` fallback, not originally in the checklist:**
+`enable_raw_mode()` needs a real tty; this sandbox (and any piped/
+redirected invocation) doesn't have one. Rather than let that surface as
+a raw error, `render::run()` checks `io::stdout().is_terminal()` first
+and, when it's false, falls back to printing a single static frame at
+the default camera angle — exactly Phase 5's original one-shot
+behavior, now reachable as a fallback path instead of the only path.
+This is also what makes `cargo run -- ~/vaults/obg-test` from a non-tty
+context (this environment, or `cargo test`) a real verification instead
+of a hang: confirmed exit 0, Kitty-handshake attempted, falls through to
+`viuer`'s half-block output with real non-constant color data, same
+verification method Phase 5 used.
+
+**Zoom-safety margin, worth keeping in mind for any future const
+change:** `ZOOM_MAX` (2.0) isn't arbitrary — `effective_camera_distance`
+divides the data-derived camera distance by `zoom`, and Phase 5's
+`camera_distance_for` bug (the perspective divide's denominator going
+negative/near-zero for realistic `fdg-sim` scales) is exactly the
+failure mode zooming in aggressively could reopen. `ZOOM_MAX = 2.0`
+keeps the effective distance at ≥1.25× the data's radius whenever
+`MIN_CAMERA_DISTANCE`'s floor isn't binding, and the floor is
+re-applied *after* dividing (not just inherited) so it also catches the
+small-graph case where dividing would otherwise push distance below it.
+Covered by a regression test
+(`effective_camera_distance_after_max_zoom_stays_safely_above_the_data_radius`)
+— raise `ZOOM_MAX` only alongside re-verifying this margin, not as an
+isolated tuning change.
+
+## Phase 8 — Query & traversal ✅
 
 Overlaps in spirit with Phase 6 (both are "query" features, and both are
 now `petgraph`-native — Phase 6 no longer pulls in a separate graph DB,
@@ -343,12 +393,65 @@ feature, not something to just extend from that function, but the same
 `Note::tags`/path-prefix data it'd read is already there on the node
 weight.
 
-- [ ] N-hop neighborhood view centered on a given note
-- [ ] Filter by tag / folder
-- [ ] Jump-to-note (fuzzy search) that recenters the view
+- [x] N-hop neighborhood view centered on a given note — `view::
+      visible_nodes()` (new `src/view.rs`), an undirected BFS out to
+      `View.hops` steps exactly matching `algo::shortest_path`'s
+      traversal pattern, as anticipated above. `[`/`]` adjust the hop
+      count live once a center is set.
+- [x] Filter by tag / folder — `View.tag`/`View.folder`, applied as a
+      plain intersection on top of any neighborhood center in `view::
+      visible_nodes()`. Picked live via the `t`/`f` prompts below, not
+      CLI flags — see the "done when" condition below.
+- [x] Jump-to-note (fuzzy search) that recenters the view — `/` opens a
+      live-filtered prompt over every note's full path (case-insensitive
+      substring match, not a real fuzzy-matching algorithm/crate — see
+      the scoping note below); `Enter` sets the highlighted match as the
+      new neighborhood center, defaulting to `view::DEFAULT_HOPS` (2)
+      the first time, keeping whatever hop count was already set on a
+      later re-center.
+
+**Architecture:** `graph::induced_subgraph()` (`src/graph/mod.rs`) builds
+an actual smaller `Graph<Note, ()>` from `view::visible_nodes()`'s node
+set (keeping only edges with both endpoints kept), and `render`'s
+interactive loop (`src/render/mod.rs`) re-runs `layout::layout()` on it
+whenever the `View` changes — filtering positions from the whole-vault
+layout after the fact was considered and rejected, since nodes would
+still be positioned relative to neighbors no longer drawn, defeating the
+point of narrowing the view. This is cached (`ViewCache`, keyed by the
+`View` that produced it) and only recomputed when the view actually
+changes, not on every camera-only redraw — an unfiltered `View`
+deliberately keeps no cache at all, so the common "no filter" case never
+pays a subgraph/layout cost.
+
+**Live, not CLI flags — matches this phase's own "done when" wording**
+("without restarting the tool"): all three features are interactive
+session state (`/`, `t`, `f` to open a prompt; `0` to clear back to the
+whole vault; `[`/`]` for hop count), not launch-time arguments. An
+initial `--tag`/`--folder`/`--center` CLI surface is a reasonable
+follow-on if it turns out to matter, not something this phase needed —
+not scoped now.
+
+**Fuzzy search, scoped down deliberately:** "fuzzy search" in the
+checklist above is implemented as a case-insensitive substring match
+(`render::prompt_matches()`), not a real fuzzy-matching algorithm or an
+added crate dependency. For a vault-scale list of note titles, "contains"
+already narrows to a handful of candidates in a few keystrokes; a real
+fuzzy matcher (typo-tolerant, subsequence-based ranking) would be a
+proportionate upgrade only if that stops being true in practice — same
+"MVP now, revisit if it's felt" posture this project has taken
+elsewhere (e.g. Phase 6's plain-text query output).
 
 **Done when:** you can narrow from "whole vault" to "this note's local
-neighborhood" without restarting the tool.
+neighborhood" without restarting the tool. ✅ Verified: `cargo test`/
+`cargo clippy --all-targets` clean (81 tests — `src/view.rs`'s BFS/filter
+logic, `graph::induced_subgraph`'s edge-endpoint rule, and `render`'s
+prompt-matching/selection/view-status logic each covered directly); a
+release build of `obg ~/vaults/obg-test` still runs to completion in this
+sandbox's non-tty fallback path, same verification method Phases 5 and 7
+used. ✅ **Eyes-verified in the user's real Kitty terminal** (2026-08-23):
+prompt text is legible, and jumping to a note via search live-narrows
+(the user's words: "zooms in on") the rendered graph to that note's
+neighborhood as intended.
 
 ## Phase 9 — Layout caching & performance
 

@@ -5,6 +5,7 @@ mod graph;
 mod layout;
 mod render;
 mod vault;
+mod view;
 
 use std::path::Path;
 
