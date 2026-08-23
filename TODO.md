@@ -71,10 +71,23 @@ etc.) — then spot-check against a real vault too.
 
 ## Phase 3 — Graph model
 
+Open design question to resolve as part of this phase, not before: does
+`petgraph::Graph` *replace* `ParsedVault` (`src/vault/mod.rs`) as the
+thing later phases (layout, rendering, query) operate on, or does
+`ParsedVault` stay as the parser's output with a separate conversion step
+producing the graph? Either is fine — just pick one deliberately rather
+than let it happen by accident.
+
 - [ ] Build a `petgraph::Graph` from the parsed notes/links
 - [ ] Basic traversal sanity check (e.g. neighbor count for a given note)
+- [ ] Verify self-loops convert cleanly — `~/vaults/obg-test/self-loop.md`
+      already produces a real `Edge { from: i, to: i }` in `ParsedVault`
+      (not hypothetical, it's in the current fixture output), so this
+      needs an actual check against real data, not an assumption that
+      `petgraph` "just handles it"
 
-**Done when:** traversal calls return correct results for a known note.
+**Done when:** traversal calls return correct results for a known note,
+including the self-loop case.
 
 ## Phase 4 — 3D force-directed layout
 
