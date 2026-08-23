@@ -78,7 +78,11 @@ impl NoteIndex {
             // relative path sorts first alphabetically. Deterministic,
             // not fully Obsidian-faithful, documented in TODO.md/CLAUDE.md.
             Some(indices) => {
-                let winner = indices.iter().min_by_key(|&&i| &self.paths[i]).copied().unwrap();
+                let winner = indices
+                    .iter()
+                    .min_by_key(|&&i| &self.paths[i])
+                    .copied()
+                    .unwrap();
                 Outcome::Resolved(winner)
             }
         }
@@ -114,10 +118,7 @@ mod tests {
     #[test]
     fn ambiguous_basename_resolves_alphabetically_first() {
         // "duplicate-name/project-alpha" < "projects/project-alpha"
-        assert_eq!(
-            index().resolve("project-alpha"),
-            Outcome::Resolved(3)
-        );
+        assert_eq!(index().resolve("project-alpha"), Outcome::Resolved(3));
     }
 
     #[test]

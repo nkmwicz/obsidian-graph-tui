@@ -4,10 +4,10 @@ use regex::Regex;
 
 static FENCED_CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)```.*?```").unwrap());
 static INLINE_CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`[^`\n]*`").unwrap());
-static WIKILINK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(!?)\[\[([^\]|#]+)(?:#([^\]|]*))?(?:\|([^\]]*))?\]\]").unwrap()
-});
-static MARKDOWN_LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[[^\]]*\]\(([^)]+)\)").unwrap());
+static WIKILINK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(!?)\[\[([^\]|#]+)(?:#([^\]|]*))?(?:\|([^\]]*))?\]\]").unwrap());
+static MARKDOWN_LINK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[[^\]]*\]\(([^)]+)\)").unwrap());
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct RawLink {
@@ -108,10 +108,13 @@ mod tests {
     fn fenced_code_block_wikilink_is_not_extracted() {
         let body = "before\n```\n[[fake-link]]\n```\nafter [[real-link]]";
         let links = extract_links(body);
-        assert_eq!(links, vec![RawLink {
-            target: "real-link".into(),
-            is_embed: false
-        }]);
+        assert_eq!(
+            links,
+            vec![RawLink {
+                target: "real-link".into(),
+                is_embed: false
+            }]
+        );
     }
 
     #[test]

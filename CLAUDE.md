@@ -165,6 +165,23 @@ of an Obsidian vault's note links — with a real graph model behind it
      rendered it back to a text grid to inspect directly. This is what
      caught the Phase 4 self-loop `NaN` bug above — the unit test suite
      alone had already called that phase done.
+   - **Correction, found from user feedback on the first real render:**
+     nodes were originally drawn with `ctx.draw(&Points { .. })` using the
+     canvas's own `Marker::Braille` — a single sub-cell dot, the exact
+     same visual weight as the dots making up an edge's line. Nodes and
+     edges were visually indistinguishable, so the whole graph read as an
+     undifferentiated zigzag of dots rather than "nodes connected by
+     edges." Confirmed by rendering a known 3-node synthetic triangle in
+     isolation: the edges were genuinely correct connected line segments,
+     but nothing marked where a node was. Fixed by switching nodes to
+     `ctx.print(x, y, Span::styled("●", ..))` — `Context::print` always
+     renders on top of the marker layer regardless of the canvas's
+     configured marker, so nodes now get a distinctly bigger, brighter
+     full-cell glyph instead of a marker-layer dot. **Not a Kitty-protocol
+     or GPU dependency** — `●` (U+25CF) is plain Unicode text through the
+     same `ctx.print`/buffer/crossterm path as any other text in this app
+     (including the Braille characters themselves, also plain Unicode);
+     it doesn't change the "works in any terminal" portability at all.
 5. **Input**: `crossterm` (confirmed: 0.29.0, actively maintained; also a
    transitive dep of `ratatui`) for live keyboard-driven camera
    orbit/zoom/pan.

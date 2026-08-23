@@ -4,9 +4,10 @@ use std::io;
 use petgraph::graph::{Graph, NodeIndex};
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
 use ratatui::symbols::Marker;
-use ratatui::widgets::canvas::{Canvas, Line, Points};
+use ratatui::text::Span;
+use ratatui::widgets::canvas::{Canvas, Line};
 
 use crate::layout::Position;
 use crate::vault::Note;
@@ -121,11 +122,17 @@ fn draw(
                 });
             }
 
-            let points: Vec<(f64, f64)> = projected.values().copied().collect();
-            ctx.draw(&Points {
-                coords: &points,
-                color: Color::Cyan,
-            });
+            // Nodes are printed as a full-cell glyph via `ctx.print()`
+            // rather than drawn with the canvas's Braille marker: a
+            // Braille-marker point is a single sub-cell dot, visually
+            // identical to the dots making up an edge's line, so nodes
+            // and edges were indistinguishable (see CLAUDE.md's Phase 5
+            // note on this). `print()` always renders on top of the
+            // marker layer regardless of the canvas's configured marker,
+            // giving nodes a distinctly bigger, brighter mark.
+            for &(x, y) in projected.values() {
+                ctx.print(x, y, Span::styled("●", Style::new().fg(Color::Cyan)));
+            }
         });
 
     frame.render_widget(canvas, area);

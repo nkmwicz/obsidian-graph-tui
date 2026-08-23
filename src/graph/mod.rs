@@ -16,7 +16,11 @@ use crate::vault::{Note, ParsedVault};
 /// for later phases (layout, query) with no benefit.
 pub fn build(vault: ParsedVault) -> Graph<Note, ()> {
     let mut graph = Graph::new();
-    let indices: Vec<_> = vault.notes.into_iter().map(|note| graph.add_node(note)).collect();
+    let indices: Vec<_> = vault
+        .notes
+        .into_iter()
+        .map(|note| graph.add_node(note))
+        .collect();
 
     let mut seen = HashSet::with_capacity(vault.edges.len());
     for edge in vault.edges {
