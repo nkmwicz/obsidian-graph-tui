@@ -25,6 +25,63 @@ of an Obsidian vault's note links — with a real graph model behind it
 - "True graph query" matters here specifically: the user wants actual
   traversal (N-hop neighborhoods, filters) backing the visualization, not
   just a static rendered export.
+- **The user is a historian; the vault is secondary-source research
+  notes on monographs.** This is the actual motivating use case behind
+  "true graph query," not a hypothetical: the goal is a genuinely
+  different research signal than manual reading or text search can give
+  — tracing how an argument moves across the literature (multi-hop
+  paths, not just 1-hop backlinks, which `obsidian.nvim`'s `:Obsidian
+  backlinks`/`grr` already covers perfectly well on their own), finding
+  which claims are structurally load-bearing across many notes
+  (centrality) rather than just individually well-cited, and surfacing
+  historiographical camps/schools as they emerge from link density
+  (community detection) rather than only the tags the user thought to
+  apply. Established directly in conversation (2026-08-22) after being
+  asked, pointedly, whether any of this beats just searching in nvim —
+  the honest answer is: 1-hop lookups don't need this tool at all,
+  multi-hop/centrality/community-structure queries do, and that's
+  specifically Phase 9 (Kùzu/Cypher), not the rendering/camera phases.
+  Don't let rendering polish (Phase 5/6) get mistaken for where this
+  project's real value lives for this use case.
+
+### Note-taking conventions this tool assumes (historian's vault)
+
+Worked out in the same conversation, not yet reflected in the fixture
+vault or parser — a real design constraint for Phase 7 (filtering) and
+Phase 9 (graph algorithms), not just user documentation:
+
+- **Atomic notes, not one note per book.** One claim/argument per note.
+  Graph algorithms (centrality, community detection) need many small,
+  densely-linked nodes to say anything non-trivial; one giant note per
+  monograph produces almost no usable structure.
+- **One "source note" per book, acting as a hub** — bibliographic
+  frontmatter plus a brief overall-argument summary, *not* a claim
+  itself. Every atomic claim note links back to it with an inline
+  `[[Source Book Title]]` wikilink in the note *body*. This is also a
+  hard technical constraint, not just style: the parser (`src/vault/`)
+  only extracts `[[wikilinks]]` from the body — a link expressed as a
+  frontmatter YAML field (e.g. `source: "[[Book]]"`) is invisible to it
+  and produces no graph edge at all.
+- **Tag source notes and claim notes distinctly** (e.g. `tags: [source]`
+  vs `tags: [claim]`). A source note is trivially high-degree — every
+  claim from that book points to it — which is a structural artifact of
+  the note-taking pattern, not evidence the *book* is an important
+  hinge. Phase 9 centrality/community queries will need to filter these
+  out (or treat them as a distinct node type) to avoid every ranking
+  being dominated by "which book has the most notes" instead of "which
+  idea is structurally load-bearing."
+- Page numbers belong in frontmatter (e.g. `page:: 42`), not baked into
+  note titles — titles need to stay legible as graph node labels,
+  autocomplete entries, and backlink-list entries, not become
+  bibliographic housekeeping.
+- **Known gap, not yet built:** links are currently untyped — the parser
+  can't distinguish "agrees with" from "refutes" from "cites in
+  passing." Fine for neighborhood/centrality/community queries (pure
+  structure is the signal), not fine for path-tracing an argument's
+  *lineage* vs. its *rebuttal chain*. Revisit if that distinction turns
+  out to matter once Phase 9 is real — it would mean parsing some typed-
+  link convention (frontmatter field or inline annotation), not
+  currently planned or scoped.
 
 ## Architecture (decided, in order of layers)
 
