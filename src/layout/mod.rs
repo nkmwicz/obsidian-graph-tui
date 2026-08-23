@@ -5,6 +5,9 @@ use petgraph::graph::{Graph, NodeIndex};
 
 use crate::vault::Note;
 
+mod cache;
+pub use cache::load_or_compute;
+
 /// A node's stable position after the simulation settles, in the
 /// simulation's arbitrary units (not terminal cells — Phase 5 maps these
 /// to screen space).
@@ -15,12 +18,21 @@ pub struct Position {
     pub z: f32,
 }
 
-/// Fixed step count standing in for "run to convergence": `fdg-sim` has no
-/// built-in stability check, and Fruchterman-Reingold's cooloff factor
-/// decays forces toward zero each step, so a generous fixed budget settles
-/// the layout without needing to detect convergence explicitly.
-const STEPS: usize = 1000;
+/// Safety ceiling on simulation steps — same value the old fixed budget
+/// used. Fruchterman-Reingold's cooloff factor decays forces geometrically
+/// each step, so in practice `run_to_convergence` below stops well before
+/// this (see the Phase 9 benchmark for real numbers); the cap just bounds
+/// worst-case runtime for a pathological graph rather than driving normal
+/// behavior.
+const MAX_STEPS: usize = 1000;
 const STEP_DT: f32 = 0.035;
+
+/// Stop once no node moves more than this far (in simulation units, which
+/// `force::fruchterman_reingold`'s `scale = 45.0` puts on the order of
+/// tens of units across a real graph) in a single step — small enough
+/// relative to that scale to be visually settled, without waiting for
+/// forces to hit exactly zero.
+const CONVERGENCE_THRESHOLD: f32 = 3.0;
 
 /// Runs a Fruchterman-Reingold force-directed simulation over `graph` and
 /// returns a stable 3D position per node, keyed by the same `NodeIndex`
@@ -32,6 +44,27 @@ const STEP_DT: f32 = 0.035;
 /// copied across by iteration instead, with `mapping` tracking which
 /// `fdg-sim` node corresponds to which of ours.
 pub fn layout(graph: &Graph<Note, ()>) -> HashMap<NodeIndex, Position> {
+    let (mut simulation, mapping) = build_simulation(graph);
+    run_to_convergence(&mut simulation);
+    extract_positions(&simulation, mapping)
+}
+
+/// Same as `layout`, but with an exact step count instead of running to
+/// convergence — split out so the Phase 9 benchmark (see the
+/// `layout_benchmark` test below) can time a fixed, comparable amount of
+/// work at each graph size. Not used outside tests, hence `#[cfg(test)]`.
+#[cfg(test)]
+fn layout_with_steps(graph: &Graph<Note, ()>, steps: usize) -> HashMap<NodeIndex, Position> {
+    let (mut simulation, mapping) = build_simulation(graph);
+    for _ in 0..steps {
+        simulation.update(STEP_DT);
+    }
+    extract_positions(&simulation, mapping)
+}
+
+type Sim = Simulation<(), ()>;
+
+fn build_simulation(graph: &Graph<Note, ()>) -> (Sim, HashMap<NodeIndex, fdg_sim::petgraph::graph::NodeIndex>) {
     let mut force_graph: ForceGraph<(), ()> = ForceGraph::default();
     let mut mapping = HashMap::with_capacity(graph.node_count());
 
@@ -50,12 +83,13 @@ pub fn layout(graph: &Graph<Note, ()>) -> HashMap<NodeIndex, Position> {
         Dimensions::Three,
         force::fruchterman_reingold(45.0, 0.975),
     );
-    let mut simulation = Simulation::from_graph(force_graph, parameters);
+    (Simulation::from_graph(force_graph, parameters), mapping)
+}
 
-    for _ in 0..STEPS {
-        simulation.update(STEP_DT);
-    }
-
+fn extract_positions(
+    simulation: &Sim,
+    mapping: HashMap<NodeIndex, fdg_sim::petgraph::graph::NodeIndex>,
+) -> HashMap<NodeIndex, Position> {
     mapping
         .into_iter()
         .map(|(idx, fdg_idx)| {
@@ -70,6 +104,37 @@ pub fn layout(graph: &Graph<Note, ()>) -> HashMap<NodeIndex, Position> {
             )
         })
         .collect()
+}
+
+/// Steps the simulation until the largest single-step node displacement
+/// drops below `CONVERGENCE_THRESHOLD`, or `MAX_STEPS` is hit. Returns the
+/// number of steps actually run (used by tests/benchmarking to see how
+/// much this saves over the old fixed budget).
+fn run_to_convergence(simulation: &mut Sim) -> usize {
+    let mut previous: Vec<(f32, f32, f32)> = simulation
+        .get_graph()
+        .node_weights()
+        .map(|n| (n.location.x, n.location.y, n.location.z))
+        .collect();
+
+    for step in 1..=MAX_STEPS {
+        simulation.update(STEP_DT);
+
+        let mut max_displacement_sq = 0.0_f32;
+        for (node, prev) in simulation.get_graph().node_weights().zip(previous.iter_mut()) {
+            let dx = node.location.x - prev.0;
+            let dy = node.location.y - prev.1;
+            let dz = node.location.z - prev.2;
+            max_displacement_sq = max_displacement_sq.max(dx * dx + dy * dy + dz * dz);
+            *prev = (node.location.x, node.location.y, node.location.z);
+        }
+
+        if max_displacement_sq < CONVERGENCE_THRESHOLD * CONVERGENCE_THRESHOLD {
+            return step;
+        }
+    }
+
+    MAX_STEPS
 }
 
 /// Collapses edges between the same pair of nodes down to one unordered
@@ -195,5 +260,95 @@ mod tests {
         let positions = layout(&graph);
 
         assert_eq!(positions.len(), 1);
+    }
+
+    /// A simple deterministic linear congruential generator, so the
+    /// synthetic benchmark graphs below are reproducible without pulling in
+    /// a `rand` dependency for a one-off perf measurement.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            self.0
+        }
+
+        fn next_usize(&mut self, bound: usize) -> usize {
+            (self.next_u64() % bound as u64) as usize
+        }
+    }
+
+    fn synthetic_graph(n: usize, avg_degree: usize, rng: &mut Lcg) -> Graph<Note, ()> {
+        let mut graph = Graph::new();
+        let nodes: Vec<NodeIndex> = (0..n)
+            .map(|i| graph.add_node(note(&format!("note-{i}.md"))))
+            .collect();
+        for &from in &nodes {
+            for _ in 0..avg_degree {
+                let to = nodes[rng.next_usize(n)];
+                if to != from {
+                    graph.add_edge(from, to, ());
+                }
+            }
+        }
+        graph
+    }
+
+    /// TODO.md Phase 9's first task: real numbers on how the layout scales,
+    /// before committing to a caching/threshold design. Not run as part of
+    /// the normal suite (`#[ignore]`) — invoke explicitly with `cargo test
+    /// --release -- --ignored --nocapture layout_benchmark`.
+    ///
+    /// Two measurements: (1) fixed-step cost, timed at a reduced step count
+    /// and extrapolated to `MAX_STEPS` — running the full budget at every
+    /// size would take far too long at the larger end (repulsion is a
+    /// plain O(n^2) nested loop, no spatial partitioning — see CLAUDE.md),
+    /// and this is valid because each step's cost is driven by node/edge
+    /// count alone, not by how "settled" the layout already is; (2) actual
+    /// `run_to_convergence` behavior — how many steps real graphs need
+    /// before `CONVERGENCE_THRESHOLD` kicks in, and what that costs
+    /// end-to-end, which is what a user actually experiences on a cache
+    /// miss.
+    #[test]
+    #[ignore = "manual perf benchmark — cargo test --release -- --ignored --nocapture layout_benchmark"]
+    fn layout_benchmark() {
+        use std::time::Instant;
+
+        const BENCH_STEPS: usize = 20;
+        let mut rng = Lcg(0xC0FFEE);
+
+        println!(
+            "\nfixed-step timing (extrapolated to MAX_STEPS={MAX_STEPS} from {BENCH_STEPS}-step timings)"
+        );
+        println!("{:>8}  {:>10}  {:>16}", "nodes", "ms/step", "extrapolated ms");
+        for &n in &[100usize, 500, 1000, 2000, 5000, 10000] {
+            let graph = synthetic_graph(n, 3, &mut rng);
+            let start = Instant::now();
+            layout_with_steps(&graph, BENCH_STEPS);
+            let elapsed = start.elapsed();
+            let ms_per_step = elapsed.as_secs_f64() * 1000.0 / BENCH_STEPS as f64;
+            println!(
+                "{n:>8}  {:>10.3}  {:>16.0}",
+                ms_per_step,
+                ms_per_step * MAX_STEPS as f64
+            );
+        }
+
+        println!("\nactual convergence-based layout() timing:");
+        println!("{:>8}  {:>8}  {:>10}", "nodes", "steps", "ms");
+        for &n in &[100usize, 500, 1000, 2000, 5000] {
+            let graph = synthetic_graph(n, 3, &mut rng);
+            let (mut simulation, _mapping) = build_simulation(&graph);
+            let start = Instant::now();
+            let steps = run_to_convergence(&mut simulation);
+            let elapsed = start.elapsed();
+            println!(
+                "{n:>8}  {steps:>8}  {:>10.0}",
+                elapsed.as_secs_f64() * 1000.0
+            );
+        }
     }
 }

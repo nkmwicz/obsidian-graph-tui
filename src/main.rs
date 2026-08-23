@@ -69,7 +69,7 @@ fn main() {
 
     match cli.command {
         None => {
-            let positions = layout::layout(&graph);
+            let positions = layout::load_or_compute(&graph, &vault_path);
             println!("Laid out {} node positions", positions.len());
 
             if let Err(e) = render::run(&graph, &positions) {

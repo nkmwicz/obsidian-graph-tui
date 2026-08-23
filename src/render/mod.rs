@@ -5,12 +5,13 @@ use image::{DynamicImage, RgbaImage};
 use petgraph::graph::{Graph, NodeIndex};
 use ratatui::crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind},
     execute,
     terminal::{self, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
+use crate::algo;
 use crate::graph;
 use crate::layout::{self, Position};
 use crate::vault::Note;
@@ -58,12 +59,30 @@ const PX_PER_ROW: u32 = 20;
 const MAX_PROMPT_MATCHES: usize = 6;
 
 const HELP_TEXT: &str =
-    "arrows/hjkl orbit  wasd pan  +/- zoom  r reset  q/esc/ctrl-c quit";
+    "arrows/hjkl orbit  wasd pan  +/- zoom  r reset  click a node to center  q/esc/ctrl-c quit";
 
 const BACKGROUND: (u8, u8, u8) = (8, 10, 18);
 const NODE_FAR: (u8, u8, u8) = (30, 90, 110);
 const NODE_NEAR: (u8, u8, u8) = (140, 230, 255);
 const EDGE_COLOR: (u8, u8, u8) = (120, 150, 170);
+
+/// Node radius (px) is depth (near/far) lerped across this range, same as
+/// before PageRank-based sizing existed, then `IMPORTANCE_RADIUS_BONUS`
+/// adds up to this many more pixels for the most important node currently
+/// on screen — a smaller base range than the original 3..8 so the two
+/// cues (distance, importance) stay visually distinguishable from each
+/// other instead of the importance bonus getting lost in an already-wide
+/// depth range.
+const NODE_RADIUS_MIN: f64 = 3.0;
+const NODE_RADIUS_MAX: f64 = 6.0;
+const IMPORTANCE_RADIUS_BONUS: f64 = 6.0;
+
+/// A warm highlight blended into a node's depth-based color in proportion
+/// to its normalized PageRank importance (see `draw_node`), capped at
+/// `IMPORTANCE_COLOR_WEIGHT` so the near/far depth cue never fully washes
+/// out — importance adds a warm tint on top of it, it doesn't replace it.
+const IMPORTANT_HIGHLIGHT: (u8, u8, u8) = (255, 195, 90);
+const IMPORTANCE_COLOR_WEIGHT: f64 = 0.55;
 
 /// Live camera state driven by keyboard input (Phase 7). `zoom` is a
 /// divisor applied to the data-derived camera distance (see
@@ -202,6 +221,29 @@ fn prompt_matches(graph: &Graph<Note, ()>, prompt: &Prompt) -> Vec<String> {
     candidates
 }
 
+/// Finds the node in `graph` whose path matches `path` exactly. Shared by
+/// both ways of picking a note to center on — the `/` search prompt and a
+/// mouse click on a rendered node — so `graph` is always the *whole*
+/// vault graph here, never a filtered view's induced subgraph, even when
+/// the match itself came from something drawn from that subgraph (see
+/// `ClickLayout`'s doc comment: an induced subgraph has its own separate
+/// `NodeIndex` space, but every `Note` in it keeps the same `path` it has
+/// in the whole-vault graph, so path is what survives the swap).
+fn find_node_by_path(graph: &Graph<Note, ()>, path: &str) -> Option<NodeIndex> {
+    graph.node_indices().find(|&i| graph[i].path.to_string_lossy() == path)
+}
+
+/// Centers `view` on `idx`, defaulting the hop count only the first time
+/// a center is set — see `apply_prompt_selection`'s doc comment for why
+/// a later re-center (via search or a click) keeps whatever hop count was
+/// already there instead of resetting it.
+fn center_on(view: &mut View, idx: NodeIndex) {
+    if view.center.is_none() {
+        view.hops = DEFAULT_HOPS;
+    }
+    view.center = Some(idx);
+}
+
 /// Applies the chosen match to `view`, according to what kind of prompt
 /// produced it. A search match that isn't found in `graph` (shouldn't
 /// happen — `chosen` always comes from `prompt_matches` run against this
@@ -215,14 +257,8 @@ fn prompt_matches(graph: &Graph<Note, ()>, prompt: &Prompt) -> Vec<String> {
 fn apply_prompt_selection(graph: &Graph<Note, ()>, prompt: &Prompt, chosen: &str, view: &mut View) {
     match prompt.kind {
         PromptKind::Search => {
-            if let Some(idx) = graph
-                .node_indices()
-                .find(|&i| graph[i].path.to_string_lossy() == chosen)
-            {
-                if view.center.is_none() {
-                    view.hops = DEFAULT_HOPS;
-                }
-                view.center = Some(idx);
+            if let Some(idx) = find_node_by_path(graph, chosen) {
+                center_on(view, idx);
             }
         }
         PromptKind::Tag => view.tag = Some(chosen.to_string()),
@@ -298,6 +334,17 @@ struct Projected {
     /// proxy for size/color shading, the same role depth plays in a point
     /// cloud renderer (e.g. deck.gl's `PointCloudLayer`).
     depth: f64,
+    /// Raw PageRank score (whole-vault-relative — see `run()`'s
+    /// `pagerank` map — not recomputed per view, so a note reads as
+    /// "important" consistently whether you're looking at the whole
+    /// vault or a filtered neighborhood around it), or `0.0` for a note
+    /// PageRank doesn't score at all (source-tagged notes — see
+    /// `algo::pagerank_scores`). `0.0` is a safe "definitely least
+    /// important" placeholder: PageRank's damping term keeps every
+    /// scored note's rank strictly above zero, so an excluded note
+    /// always normalizes to the bottom of the visible range rather than
+    /// colliding with a real note's score.
+    importance: f64,
 }
 
 /// RAII terminal-state guard: enters raw mode + the alternate screen on
@@ -305,6 +352,34 @@ struct Projected {
 /// runs on a normal return *and* on an unwinding panic. Without this, a
 /// panic mid-orbit would leave the user's real terminal stuck in raw mode
 /// (no echo, no line buffering, no Ctrl-C) after the process exits.
+/// Mouse tracking restricted to button press/release ("normal tracking",
+/// `?1000h`) with SGR extended coordinates (`?1006h`) — deliberately
+/// *not* `crossterm::event::EnableMouseCapture`, which also turns on
+/// button-drag (`?1002h`) and all-motion (`?1003h`) tracking. That
+/// flooded stdin with a continuous stream of mouse-*move* escape
+/// sequences the instant the mouse moved at all (button or not), and
+/// `viuer`'s one-time Kitty graphics-protocol handshake (forced on the
+/// very first frame print, cached after) does a strict prefix match
+/// against the terminal's response to its own query — any stray escape
+/// sequence arriving first breaks that match outright. Confirmed
+/// directly: a real run crashed with `error: Kitty response:
+/// [UnknownEscSeq(['[', '<', '3']), Char('5'), ...]` — SGR mouse-motion
+/// reports (button code 35 = "moved, no button") queued ahead of the
+/// terminal's actual handshake response. Click-only tracking narrows the
+/// event volume a lot, but a click could in principle still land in that
+/// same handshake window — closed for good by not enabling tracking at
+/// all until *after* the first frame has already printed (see
+/// `interactive_loop`), by which point the handshake has unconditionally
+/// already completed and nothing can ever race it again.
+const ENABLE_CLICK_TRACKING: &str = "\x1b[?1000h\x1b[?1006h";
+const DISABLE_CLICK_TRACKING: &str = "\x1b[?1006l\x1b[?1000l";
+
+/// RAII terminal-state guard: enters raw mode + the alternate screen on
+/// construction, and — critically — always restores both (and mouse
+/// tracking, if `interactive_loop` turned it on) on `Drop`, which runs on
+/// a normal return *and* on an unwinding panic. Without this, a panic
+/// mid-orbit would leave the user's real terminal stuck in raw mode (no
+/// echo, no line buffering, no Ctrl-C) after the process exits.
 struct TerminalGuard;
 
 impl TerminalGuard {
@@ -317,8 +392,14 @@ impl TerminalGuard {
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        // Harmless to send even if click tracking was never turned on —
+        // disabling an already-disabled mode is a no-op as far as the
+        // terminal is concerned.
+        let mut stdout = io::stdout();
+        let _ = write!(stdout, "{DISABLE_CLICK_TRACKING}");
+        let _ = stdout.flush();
         let _ = terminal::disable_raw_mode();
-        let _ = execute!(io::stdout(), cursor::Show, LeaveAlternateScreen);
+        let _ = execute!(stdout, cursor::Show, LeaveAlternateScreen);
     }
 }
 
@@ -336,12 +417,23 @@ impl Drop for TerminalGuard {
 /// static frame at the default camera angle — the same behavior this
 /// function had before Phase 7.
 pub fn run(graph: &Graph<Note, ()>, positions: &HashMap<NodeIndex, Position>) -> io::Result<()> {
+    // Keyed by note path rather than `NodeIndex` so it stays valid across
+    // a filtered `View`'s induced subgraph, which has its own separate
+    // index space (see `ViewCache`) — computed once here, against the
+    // whole vault, so a note reads as "important" consistently whether
+    // you're looking at the whole vault or a filtered neighborhood
+    // around it, not recomputed (and re-relativized) per view.
+    let pagerank: HashMap<String, f64> = algo::pagerank_scores(graph)
+        .into_iter()
+        .map(|(idx, score)| (graph[idx].path.to_string_lossy().into_owned(), score))
+        .collect();
+
     if !io::stdout().is_terminal() {
-        return print_frame(graph, positions, &Camera::default(), &[]);
+        return print_frame(graph, positions, &pagerank, &Camera::default(), &[]).map(|_| ());
     }
 
     let _guard = TerminalGuard::enter()?;
-    interactive_loop(graph, positions)
+    interactive_loop(graph, positions, &pagerank)
 }
 
 /// Redraws on every key press (and terminal resize, which also arrives as
@@ -361,11 +453,13 @@ pub fn run(graph: &Graph<Note, ()>, positions: &HashMap<NodeIndex, Position>) ->
 fn interactive_loop(
     graph: &Graph<Note, ()>,
     positions: &HashMap<NodeIndex, Position>,
+    pagerank: &HashMap<String, f64>,
 ) -> io::Result<()> {
     let mut camera = Camera::default();
     let mut view = View::default();
     let mut prompt: Option<Prompt> = None;
     let mut cache: Option<ViewCache> = None;
+    let mut click_tracking_enabled = false;
 
     loop {
         let needs_recompute = match &cache {
@@ -388,9 +482,38 @@ fn interactive_loop(
         };
 
         let header = header_lines(graph, &view, &prompt);
-        print_frame(draw_graph, draw_positions, &camera, &header)?;
+        // Captures where every node landed on screen this frame, so the
+        // *next* event — if it's a mouse click — can resolve back to the
+        // note it landed on (see `ClickLayout`).
+        let layout = print_frame(draw_graph, draw_positions, pagerank, &camera, &header)?;
 
-        let Event::Key(key) = event::read()? else {
+        // Deliberately deferred to *after* the first frame has printed —
+        // see `ENABLE_CLICK_TRACKING`'s doc comment for why enabling this
+        // any earlier raced `viuer`'s one-time Kitty-protocol handshake
+        // and crashed. By this point that handshake is unconditionally
+        // done (that first `print_frame` call forced it), so there's
+        // nothing left for a mouse escape sequence to ever interleave
+        // with again.
+        if !click_tracking_enabled {
+            let mut stdout = io::stdout();
+            write!(stdout, "{ENABLE_CLICK_TRACKING}")?;
+            stdout.flush()?;
+            click_tracking_enabled = true;
+        }
+
+        let event = event::read()?;
+
+        if prompt.is_none()
+            && let Event::Mouse(mouse) = &event
+            && mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && let Some(path) = layout.nearest_note(mouse.column, mouse.row)
+            && let Some(idx) = find_node_by_path(graph, path)
+        {
+            center_on(&mut view, idx);
+            continue;
+        }
+
+        let Event::Key(key) = event else {
             continue;
         };
         if key.kind != KeyEventKind::Press {
@@ -457,9 +580,10 @@ fn interactive_loop(
 fn print_frame(
     graph: &Graph<Note, ()>,
     positions: &HashMap<NodeIndex, Position>,
+    pagerank: &HashMap<String, f64>,
     camera: &Camera,
     header: &[String],
-) -> io::Result<()> {
+) -> io::Result<ClickLayout> {
     let mut stdout = io::stdout();
     if !header.is_empty() {
         execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
@@ -476,7 +600,7 @@ fn print_frame(
     let width = (f64::from(cols) * px_per_col).round() as u32;
     let height = (f64::from(rows) * px_per_row).round() as u32;
 
-    let pixmap = render_frame(graph, positions, camera, width, height);
+    let (pixmap, screen_fracs) = render_frame(graph, positions, pagerank, camera, width, height);
     let image = pixmap_to_image(&pixmap);
 
     let config = viuer::Config {
@@ -486,21 +610,77 @@ fn print_frame(
         ..Default::default()
     };
     viuer::print(&image, &config)
-        .map(|_| ())
-        .map_err(io::Error::other)
+        .map_err(io::Error::other)?;
+
+    let nodes = screen_fracs
+        .into_iter()
+        .filter_map(|(idx, (frac_x, frac_y))| {
+            graph
+                .node_weight(idx)
+                .map(|n| (n.path.to_string_lossy().into_owned(), frac_x, frac_y))
+        })
+        .collect();
+
+    Ok(ClickLayout { cols, rows, header_rows, nodes })
+}
+
+/// Where each node landed on screen for the frame just printed by
+/// `print_frame` — used to resolve a mouse click back to the note it
+/// landed on (`nearest_note`). Keyed by note path rather than `NodeIndex`
+/// because the graph actually drawn can be a filtered `View`'s induced
+/// subgraph, which has its own separate index space (see `ViewCache`); a
+/// path stays valid across that swap; an index from one graph looked up
+/// in the other wouldn't mean anything.
+struct ClickLayout {
+    cols: u16,
+    rows: u16,
+    header_rows: u16,
+    nodes: Vec<(String, f64, f64)>,
+}
+
+impl ClickLayout {
+    /// The path of the note whose on-screen position is nearest `(col,
+    /// row)`, or `None` if the click landed outside the image area
+    /// entirely (the header lines above it, or the unused terminal margin
+    /// past the image's actual `cols`x`rows`).
+    fn nearest_note(&self, col: u16, row: u16) -> Option<&str> {
+        if col >= self.cols || row < self.header_rows {
+            return None;
+        }
+        let row_in_image = row - self.header_rows;
+        if row_in_image >= self.rows {
+            return None;
+        }
+
+        let frac_x = f64::from(col) / f64::from(self.cols.max(1));
+        let frac_y = f64::from(row_in_image) / f64::from(self.rows.max(1));
+
+        self.nodes
+            .iter()
+            .min_by(|(_, ax, ay), (_, bx, by)| {
+                let da = (ax - frac_x).powi(2) + (ay - frac_y).powi(2);
+                let db = (bx - frac_x).powi(2) + (by - frac_y).powi(2);
+                da.total_cmp(&db)
+            })
+            .map(|(path, _, _)| path.as_str())
+    }
 }
 
 /// The pure compute step of a frame: project every node under `camera`,
 /// derive the viewport, and rasterize. Split out from `print_frame` so the
 /// projection/pan math can be unit tested without a real terminal or an
-/// actual image print.
+/// actual image print. Also returns each node's fractional position within
+/// the rendered image (0..1 on both axes) — `print_frame` turns this into
+/// the `ClickLayout` a later mouse click resolves against; nothing in this
+/// function itself is click-handling logic.
 fn render_frame(
     graph: &Graph<Note, ()>,
     positions: &HashMap<NodeIndex, Position>,
+    pagerank: &HashMap<String, f64>,
     camera: &Camera,
     width: u32,
     height: u32,
-) -> Pixmap {
+) -> (Pixmap, HashMap<NodeIndex, (f64, f64)>) {
     let camera_distance = effective_camera_distance(positions.values(), camera);
     let projected: HashMap<NodeIndex, Projected> = positions
         .iter()
@@ -513,14 +693,34 @@ fn render_frame(
                 camera.rotation_x,
                 camera.rotation_z,
             );
-            (idx, Projected { x, y, depth })
+            let importance = graph
+                .node_weight(idx)
+                .and_then(|note| pagerank.get(note.path.to_string_lossy().as_ref()))
+                .copied()
+                .unwrap_or(0.0);
+            (idx, Projected { x, y, depth, importance })
         })
         .collect();
 
     let (mut x_bounds, mut y_bounds) = bounds(projected.values().map(|p| (p.x, p.y)));
     apply_pan(&mut x_bounds, &mut y_bounds, camera);
 
-    rasterize(graph, &projected, x_bounds, y_bounds, width, height)
+    let screen_fracs: HashMap<NodeIndex, (f64, f64)> = projected
+        .iter()
+        .map(|(&idx, p)| {
+            let (px, py) = to_pixel(p.x, p.y, x_bounds, y_bounds, width, height);
+            (
+                idx,
+                (
+                    f64::from(px) / f64::from(width.max(1)),
+                    f64::from(py) / f64::from(height.max(1)),
+                ),
+            )
+        })
+        .collect();
+
+    let pixmap = rasterize(graph, &projected, x_bounds, y_bounds, width, height);
+    (pixmap, screen_fracs)
 }
 
 /// Shifts the viewport by the camera's pan, in units of the (isotropic)
@@ -657,7 +857,8 @@ fn rasterize(
     let (r, g, b) = BACKGROUND;
     pixmap.fill(Color::from_rgba8(r, g, b, 255));
 
-    let (min_depth, max_depth) = depth_range(projected.values());
+    let (min_depth, max_depth) = value_range(projected.values().map(|p| p.depth));
+    let (min_importance, max_importance) = value_range(projected.values().map(|p| p.importance));
 
     for edge in graph.edge_indices() {
         let (from, to) = graph.edge_endpoints(edge).unwrap();
@@ -692,31 +893,36 @@ fn rasterize(
             height,
             min_depth,
             max_depth,
+            min_importance,
+            max_importance,
         );
     }
 
     pixmap
 }
 
-fn depth_range<'a>(points: impl Iterator<Item = &'a Projected>) -> (f64, f64) {
-    let mut min_d = f64::MAX;
-    let mut max_d = f64::MIN;
-    for p in points {
-        min_d = min_d.min(p.depth);
-        max_d = max_d.max(p.depth);
+/// Min/max over any per-node value used for a lerp — depth and PageRank
+/// importance both need this same "normalize into the visible range"
+/// treatment, just with different source values.
+fn value_range(values: impl Iterator<Item = f64>) -> (f64, f64) {
+    let mut min_v = f64::MAX;
+    let mut max_v = f64::MIN;
+    for v in values {
+        min_v = min_v.min(v);
+        max_v = max_v.max(v);
     }
-    if min_d > max_d {
+    if min_v > max_v {
         (0.0, 1.0)
     } else {
-        (min_d, max_d)
+        (min_v, max_v)
     }
 }
 
-fn normalize_depth(depth: f64, min_depth: f64, max_depth: f64) -> f64 {
-    if (max_depth - min_depth).abs() < f64::EPSILON {
+fn normalize(value: f64, min: f64, max: f64) -> f64 {
+    if (max - min).abs() < f64::EPSILON {
         0.5
     } else {
-        (depth - min_depth) / (max_depth - min_depth)
+        (value - min) / (max - min)
     }
 }
 
@@ -746,6 +952,23 @@ fn to_pixel(
     (px as f32, py as f32)
 }
 
+/// Pure node radius/color computation, split out from `draw_node` so it's
+/// unit-testable without a `Pixmap` — `depth_t`/`importance_t` are already
+/// normalized to 0..1 (`importance_t` may fall outside that range for a
+/// note PageRank doesn't score at all; see `Projected::importance`'s doc
+/// comment, `lerp`/`.clamp` below both treat that as "at the bottom").
+fn node_style(depth_t: f64, importance_t: f64) -> (f32, (u8, u8, u8)) {
+    let radius = (lerp(NODE_RADIUS_MIN, NODE_RADIUS_MAX, depth_t)
+        + IMPORTANCE_RADIUS_BONUS * importance_t.clamp(0.0, 1.0)) as f32;
+    let depth_color = lerp_color(NODE_FAR, NODE_NEAR, depth_t);
+    let color = lerp_color(
+        depth_color,
+        IMPORTANT_HIGHLIGHT,
+        importance_t * IMPORTANCE_COLOR_WEIGHT,
+    );
+    (radius, color)
+}
+
 #[expect(clippy::too_many_arguments)]
 fn draw_node(
     pixmap: &mut Pixmap,
@@ -756,11 +979,13 @@ fn draw_node(
     height: u32,
     min_depth: f64,
     max_depth: f64,
+    min_importance: f64,
+    max_importance: f64,
 ) {
     let (px, py) = to_pixel(p.x, p.y, x_bounds, y_bounds, width, height);
-    let t = normalize_depth(p.depth, min_depth, max_depth);
-    let radius = lerp(3.0, 8.0, t) as f32;
-    let (r, g, b) = lerp_color(NODE_FAR, NODE_NEAR, t);
+    let depth_t = normalize(p.depth, min_depth, max_depth);
+    let importance_t = normalize(p.importance, min_importance, max_importance);
+    let (radius, (r, g, b)) = node_style(depth_t, importance_t);
 
     let mut pb = PathBuilder::new();
     pb.push_circle(px, py, radius);
@@ -787,7 +1012,7 @@ fn draw_edge(
 ) {
     let (x1, y1) = to_pixel(a.x, a.y, x_bounds, y_bounds, width, height);
     let (x2, y2) = to_pixel(b.x, b.y, x_bounds, y_bounds, width, height);
-    let t = normalize_depth((a.depth + b.depth) / 2.0, min_depth, max_depth);
+    let t = normalize((a.depth + b.depth) / 2.0, min_depth, max_depth);
     let alpha = lerp(70.0, 160.0, t) as u8;
 
     let mut pb = PathBuilder::new();
@@ -918,6 +1143,29 @@ mod tests {
 
         assert_eq!(view.center, Some(NodeIndex::new(2)));
         assert_eq!(view.hops, 5);
+    }
+
+    #[test]
+    fn clicking_a_node_centers_the_view_same_as_search_would() {
+        // Mirrors `interactive_loop`'s click-handling branch: resolve a
+        // screen position to a note via `ClickLayout`, then the note to a
+        // whole-graph `NodeIndex` via `find_node_by_path`, then apply it
+        // exactly like a search selection does.
+        let graph = fixture_graph();
+        let layout = ClickLayout {
+            cols: 100,
+            rows: 40,
+            header_rows: 2,
+            nodes: vec![("projects/alpha.md".to_string(), 0.5, 0.5)],
+        };
+        let mut view = View::default();
+
+        let path = layout.nearest_note(50, 22).expect("click lands on a node");
+        let idx = find_node_by_path(&graph, path).expect("path resolves in the whole graph");
+        center_on(&mut view, idx);
+
+        assert_eq!(view.center, Some(NodeIndex::new(0)));
+        assert_eq!(view.hops, DEFAULT_HOPS);
     }
 
     #[test]
@@ -1131,8 +1379,36 @@ mod tests {
     }
 
     #[test]
-    fn normalize_depth_of_a_flat_range_is_the_midpoint() {
-        assert_eq!(normalize_depth(5.0, 5.0, 5.0), 0.5);
+    fn normalize_of_a_flat_range_is_the_midpoint() {
+        assert_eq!(normalize(5.0, 5.0, 5.0), 0.5);
+    }
+
+    #[test]
+    fn higher_importance_yields_a_larger_radius_at_the_same_depth() {
+        let (low_radius, _) = node_style(0.5, 0.0);
+        let (high_radius, _) = node_style(0.5, 1.0);
+        assert!(high_radius > low_radius);
+    }
+
+    #[test]
+    fn negative_importance_clamps_to_the_same_radius_as_zero() {
+        // A source-tagged note (excluded from PageRank, `importance: 0.0`
+        // raw) can normalize below the visible range's minimum — see
+        // `Projected::importance`'s doc comment — and shouldn't render
+        // any smaller than an importance of exactly 0.0 would.
+        let (zero_radius, _) = node_style(0.5, 0.0);
+        let (negative_radius, _) = node_style(0.5, -0.4);
+        assert_eq!(zero_radius, negative_radius);
+    }
+
+    #[test]
+    fn higher_importance_shifts_color_toward_the_highlight() {
+        let (_, low_color) = node_style(0.5, 0.0);
+        let (_, high_color) = node_style(0.5, 1.0);
+        assert_ne!(low_color, high_color);
+        // Warmer (more red, less blue) as importance rises toward
+        // `IMPORTANT_HIGHLIGHT`.
+        assert!(high_color.0 > low_color.0);
     }
 
     #[test]
@@ -1216,6 +1492,7 @@ mod tests {
                 x: -1.0,
                 y: 0.0,
                 depth: 1.0,
+                importance: 0.0,
             },
         );
         projected.insert(
@@ -1224,6 +1501,7 @@ mod tests {
                 x: 1.0,
                 y: 0.0,
                 depth: 0.8,
+                importance: 1.0,
             },
         );
 
@@ -1258,9 +1536,34 @@ mod tests {
         camera.handle_key(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::NONE));
         camera.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
 
-        let pixmap = render_frame(&graph, &positions, &camera, 50, 50);
+        let pagerank = HashMap::new();
+        let (pixmap, screen_fracs) = render_frame(&graph, &positions, &pagerank, &camera, 50, 50);
 
         assert_eq!(pixmap.width(), 50);
         assert_eq!(pixmap.height(), 50);
+        assert_eq!(screen_fracs.len(), 2);
+    }
+
+    #[test]
+    fn nearest_note_finds_the_closest_node_and_rejects_clicks_outside_the_image() {
+        let layout = ClickLayout {
+            cols: 100,
+            rows: 40,
+            header_rows: 3,
+            nodes: vec![
+                ("left.md".to_string(), 0.1, 0.5),
+                ("right.md".to_string(), 0.9, 0.5),
+            ],
+        };
+
+        // Inside the image, closer to "left.md".
+        assert_eq!(layout.nearest_note(5, 3 + 20), Some("left.md"));
+        // Inside the image, closer to "right.md".
+        assert_eq!(layout.nearest_note(95, 3 + 20), Some("right.md"));
+        // In the header, above the image entirely.
+        assert_eq!(layout.nearest_note(5, 0), None);
+        // Past the image's right/bottom edge (unused terminal margin).
+        assert_eq!(layout.nearest_note(100, 3 + 20), None);
+        assert_eq!(layout.nearest_note(5, 3 + 40), None);
     }
 }

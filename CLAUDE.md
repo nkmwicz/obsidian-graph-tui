@@ -194,6 +194,60 @@ vault or parser — a real design constraint for `TODO.md` Phase 8
      unchanged-vault* case; it doesn't remove the O(n²) ceiling itself,
      which would need an algorithmic fix (Barnes-Hut, likely a different
      crate) if a real vault ever proves it necessary.
+   - **Layout caching & performance (Phase 9) — benchmark numbers and what
+     they mean:** `layout::tests::layout_benchmark` (`#[ignore]`d, run
+     with `cargo test --release -- --ignored --nocapture
+     layout_benchmark`) times synthetic graphs (a hand-rolled
+     deterministic LCG generator, no `rand` dependency for a one-off
+     measurement) at several sizes, two ways:
+     - **Fixed-step cost** (20 steps timed, extrapolated ×50 to the old
+       1000-step budget) confirms the O(n²) scaling directly — at the
+       larger sizes tested, doubling node count roughly quadruples
+       per-step cost, as expected for an all-pairs repulsion loop:
+
+       | nodes  | ms/step | extrapolated 1000-step ms |
+       |-------:|--------:|---------------------------:|
+       | 100    | 0.08    | 76                          |
+       | 500    | 1.6     | 1,610                       |
+       | 1,000  | 5.2     | 5,190                       |
+       | 2,000  | 20.3    | 20,300                      |
+       | 5,000  | 133     | 133,000 (≈2.2 min)          |
+       | 10,000 | 549     | 549,000 (≈9 min)            |
+
+     - **Actual `run_to_convergence` cost** (the real, current behavior
+       on a cache miss — see `CONVERGENCE_THRESHOLD`'s derivation in
+       `TODO.md` Phase 9) — meaningfully better than the fixed-step
+       extrapolation at the small end, but still expensive at a few
+       thousand notes, because `fdg-sim` starts every node inside a
+       fixed-size box regardless of node count, so denser graphs need
+       many steps just to physically spread out before displacement
+       drops below threshold:
+
+       | nodes | steps to converge | ms      |
+       |------:|-------------------:|--------:|
+       | 100   | 162                | 9       |
+       | 500   | 272                | 361     |
+       | 1,000 | 347                | 1,827   |
+       | 2,000 | 716                | 15,839  |
+       | 5,000 | 902                | 137,305 |
+
+     - **Practical ceiling, stated plainly:** a vault of a few thousand
+       notes costs tens of seconds to a few minutes on a cache miss
+       (first launch, or any launch after the vault's link structure
+       changes) even with the convergence check — this is a real,
+       measured ceiling, not a hypothetical one. Disk caching
+       (`layout::load_or_compute()`, `src/layout/cache.rs`) turns this
+       into a one-time cost per vault-structure-change rather than a
+       per-launch cost, which is the actual fix for the common case
+       ("I didn't edit my vault since last time"); it does not lower the
+       cost of that one-time computation itself. If a real vault the
+       user has ever proves this first-computation cost is a problem in
+       practice, the only real fix is algorithmic (Barnes-Hut/quadtree
+       repulsion — see the scaling-limit note above), not more caching
+       — deliberately not built now, since it's real added complexity
+       (and, per `fdg-sim`'s scaling-limit note above, likely a
+       different crate) with no evidence yet that it's needed for a
+       vault this user actually has.
 4. **Rendering**: raster image, composited with [`tiny-skia`](https://github.com/linebender/tiny-skia)
    (confirmed: 0.12.0, 43M downloads, now under the Linebender org, updated
    Feb 2026) and displayed inline via [`viuer`](https://github.com/atanunq/viuer)
@@ -300,7 +354,45 @@ vault or parser — a real design constraint for `TODO.md` Phase 8
      construction, not by tuning a constant until it looks right.
 5. **Input**: `crossterm` (confirmed: 0.29.0, actively maintained; also a
    transitive dep of `ratatui`) for live keyboard-driven camera
-   orbit/zoom/pan.
+   orbit/zoom/pan, and — since Phase 9.5 (`TODO.md`) — mouse clicks too: a
+   left-click on a rendered node centers the view there, the same as
+   picking it from `/` search. Node size/color also stopped being purely
+   a depth cue in that phase: `render::node_style()` blends in PageRank
+   importance (`algo::pagerank_scores()`, computed once against the
+   whole vault so it reads consistently across any filtered view), so
+   the render itself now visually surfaces the project's actual
+   differentiator (centrality) instead of that only being reachable via
+   the separate `pagerank` text command. Both added directly in response
+   to user feedback that node-size differences in the render looked
+   meaningful but weren't, and a request for more interactivity — not
+   originally scoped, no dedicated phase number reserved for it ahead of
+   time (see `TODO.md` Phase 9.5).
+   - **Mouse capture is *not* `crossterm::event::EnableMouseCapture`,
+     found the hard way.** That command turns on button-drag (`?1002h`)
+     and all-motion (`?1003h`) tracking, not just clicks; enabled before
+     the first frame printed (as `TerminalGuard::enter` originally did
+     it), the instant the mouse moved at all it flooded stdin with
+     motion escape sequences that broke `viuer`'s one-time Kitty-
+     protocol handshake — a strict prefix match against the terminal's
+     response to its own query, which fails outright the moment anything
+     else arrives first. Caught on the very first real run in the user's
+     terminal (this sandbox has no tty to have caught it with):
+     `error: Kitty response: [UnknownEscSeq(['[', '<', '3']), Char('5'),
+     ...]` — SGR mouse-move reports, not the terminal's real response.
+     Fixed two ways, together closing the race rather than narrowing it:
+     hand-written `?1000h`/`?1006h`-only escape strings (press/release
+     with SGR coordinates, no motion modes) in place of crossterm's
+     all-modes command, *and* moving when tracking gets enabled from
+     `TerminalGuard::enter` (before the first frame) to after
+     `interactive_loop`'s first successful frame print — by which point
+     the handshake has unconditionally already completed, closing the
+     race outright rather than just shrinking its window.
+   - Neither the importance-based sizing/color nor the (now-fixed) mouse
+     click-to-center has been eyeball-verified as *working correctly* in
+     the user's real Kitty terminal yet — only the crash above has been
+     confirmed and fixed. Treat both as "believed correct" until
+     confirmed, same posture Phase 5's rendering pivot carried until its
+     own confirmation landed.
 
 > Crate names/versions above were verified against crates.io + GitHub on
 > 2026-08-22 (not just identified via web research) — see corrections to
@@ -474,11 +566,15 @@ vault or parser — a real design constraint for `TODO.md` Phase 8
    deliberately just a case-insensitive substring match (`render::
    prompt_matches()`), not a real fuzzy algorithm or crate — see
    `TODO.md` Phase 8 for why that's judged sufficient for now.
-7. Layout caching & performance: persist computed positions so an
-   unchanged vault reloads instead of rerunning the simulation; replace
-   the fixed 1000-step budget with a convergence check. See `TODO.md`
-   Phase 9 — placed last deliberately, per the "prove the pipeline
-   first" philosophy below, not because it's unimportant.
+7. **Layout caching & performance — done.** Persist computed positions
+   (`layout::load_or_compute()`, `src/layout/cache.rs`) so an unchanged
+   vault reloads instead of rerunning the simulation; the fixed
+   1000-step budget is now a convergence check (`layout::
+   run_to_convergence()`) with `MAX_STEPS` as a safety cap instead of a
+   fixed count. See `TODO.md` Phase 9 and point 3 above ("Layout caching
+   & performance") for the benchmark numbers and design decisions —
+   placed last deliberately, per the "prove the pipeline first"
+   philosophy below, not because it was unimportant.
 
 ## Explicitly out of scope for v1
 
@@ -576,7 +672,7 @@ match rather than letting them drift apart.
 
 ## Starting point for a fresh session
 
-Check `TODO.md` for the current phase. As of this writing Phases 0–8
+Check `TODO.md` for the current phase. As of this writing Phases 0–9
 (hello world CLI, CLI args & config, vault parser, `petgraph` graph
 model, `fdg-sim` 3D layout, static render — now `tiny-skia`+`viuer`
 raster/Kitty-protocol, not the original `ratatui` Braille attempt; see
@@ -585,10 +681,16 @@ detection, path tracing, all hand-rolled over `petgraph` in
 `src/algo/mod.rs` after an embedded Cypher graph DB was tried and
 abandoned — see `TODO.md` Phase 6 and this file's point 4 above for the
 full story — camera interaction: keyboard-driven orbit/zoom/pan over the
-raster renderer, see point 5 above and `TODO.md` Phase 7 — and query/
+raster renderer, see point 5 above and `TODO.md` Phase 7 — query/
 traversal: a live N-hop neighborhood view, tag/folder filtering, and
 jump-to-note search, all interactive session state layered on the same
-render loop, see point 6 above and `TODO.md` Phase 8) are done — next up
-is **Phase 9: layout caching & performance**, placed last deliberately
-per this file's "prove the pipeline first" philosophy, not because it's
-unimportant.
+render loop, see point 6 above and `TODO.md` Phase 8 — and layout
+caching & performance: `layout::load_or_compute()` persists positions to
+disk keyed by a structure hash so an unchanged vault reloads instead of
+rerunning the simulation, and the fixed 1000-step budget is now a
+convergence check with real benchmark numbers recorded, see point 3
+above (under "3D layout") and `TODO.md` Phase 9) are done — next up is
+**Phase 10: typed links** or **Phase 11: `research.lua` bridge**, both
+explicitly not yet scoped in depth and deferred until felt firsthand in
+real use rather than built speculatively — see `TODO.md` for what each
+would involve if picked up.

@@ -210,7 +210,7 @@ above), so there's nothing left to "fix" here.
       per-cell aspect ratio for the pixel buffer removes the only
       remaining source of stretch — no more guessing needed.
 
-## Phase 6 — Graph algorithms: PageRank, community detection, path tracing
+## Phase 6 — Graph algorithms: PageRank, community detection, path tracing ✅
 
 **Reprioritized ahead of camera interaction and petgraph-based
 query/traversal** (2026-08-22) — moved from last place to next, on
@@ -453,7 +453,7 @@ prompt text is legible, and jumping to a note via search live-narrows
 (the user's words: "zooms in on") the rendered graph to that note's
 neighborhood as intended.
 
-## Phase 9 — Layout caching & performance
+## Phase 9 — Layout caching & performance ✅
 
 Placed here, not right after Phase 4, on purpose: the project's own
 priority is proving the interactive pipeline end-to-end first (nothing's
@@ -471,35 +471,183 @@ but this is the actual bottleneck on a large vault, not parsing (fast,
 O(n)) or traversal (petgraph BFS/DFS, O(V+E), also fast at any realistic
 size — see CLAUDE.md).
 
-- [ ] Benchmark the current fixed-1000-step layout against a synthetic
+- [x] Benchmark the current fixed-1000-step layout against a synthetic
       vault at a few sizes (e.g. 500 / 2,000 / 10,000 notes) to get real
       numbers instead of estimates, before committing to a specific
-      caching/threshold design
-- [ ] Persist computed positions to disk, keyed by a hash of the vault's
+      caching/threshold design — `layout::tests::layout_benchmark`
+      (`#[ignore]`; run with `cargo test --release -- --ignored
+      --nocapture layout_benchmark`), a synthetic-graph generator over a
+      hand-rolled deterministic LCG (no `rand` dependency for a one-off
+      perf measurement). Confirms the O(n²) scaling directly (doubling n
+      roughly quadruples per-step cost at the larger sizes tested) — see
+      the recorded numbers and resulting ceiling below.
+- [x] Persist computed positions to disk, keyed by a hash of the vault's
       resolved node/edge structure (not file mtimes — those are fragile
       against touches/moves that don't change content); reload instead
-      of recomputing when the hash matches
-- [ ] Replace the fixed `STEPS = 1000` budget with a convergence check
+      of recomputing when the hash matches — new `src/layout/cache.rs`,
+      `layout::load_or_compute()`. Hash is a hand-rolled FNV-1a over
+      sorted note paths + sorted edge pairs (sorted so incidental
+      filesystem-walk-order differences don't false-invalidate); cache
+      file is TOML (reusing the `toml`/`serde` deps `config.rs` already
+      pulls in) at `~/.cache/obg/layout-<hash-of-vault-path>.toml` (via
+      `directories`, same `ProjectDirs::from("", "", "obg")` pattern
+      `config::config_path()` uses, `cache_dir()` instead of
+      `config_dir()`). Any cache read/write failure (missing file,
+      unwritable dir, corrupt contents, hash mismatch) is treated as a
+      plain cache miss, never an error — caching is a pure optimization
+      on top of `layout::layout()`, never a new correctness requirement.
+      Verified end-to-end against `~/vaults/obg-test`: a second run
+      reuses the cache (0.16s vs. the first run's cost), and editing the
+      vault (adding a note) changes the stored `structure_hash` and
+      forces a fresh compute, confirmed by diffing the cache file's hash
+      before/after.
+- [x] Replace the fixed `STEPS = 1000` budget with a convergence check
       (stop once max per-step node displacement drops below a
       threshold) — cuts wasted computation on cache misses and the
-      first run alike, independent of caching
-- [ ] Record the benchmark numbers and the resulting practical
-      vault-size ceiling in `CLAUDE.md`
+      first run alike, independent of caching — `layout::
+      run_to_convergence()`, capped at `MAX_STEPS = 1000` (same ceiling
+      as before, now a safety cap rather than a fixed count) with
+      `CONVERGENCE_THRESHOLD = 3.0` (simulation units — about 7% of
+      `force::fruchterman_reingold`'s `scale = 45.0`). That threshold
+      was picked empirically, not guessed: an initial `0.05` (intended
+      as "obviously small") almost never triggered above ~100 nodes,
+      because `fdg-sim` starts every node randomly within a *fixed-size*
+      `node_start_size` box regardless of graph size (confirmed by
+      reading `Simulation::reset_node_placement` directly) — so a larger
+      graph starts more crowded and needs many steps just to physically
+      spread out, not because it's "unsettled" in any way that matters
+      visually. `3.0` was the smallest tested value at which every
+      benchmarked size (100 through 5,000 nodes) converged before
+      `MAX_STEPS` — see the recorded numbers below. Not eyeball-verified
+      that `3.0` still looks right in the user's real terminal (this
+      environment has no real Kitty terminal — same open-verification
+      gap Phase 5/7/8 already carry); revisit the constant if it turns
+      out to look unsettled in practice.
+- [x] Record the benchmark numbers and the resulting practical
+      vault-size ceiling in `CLAUDE.md` — see the "Layout caching &
+      performance" entry there.
 - [ ] *(Stretch, only if the benchmark shows it's needed)* incremental
       warm-start reflow: on a small vault edit, reuse cached positions as
       the simulation's starting point and only reflow the changed
-      neighborhood, instead of invalidating the whole cache
+      neighborhood, instead of invalidating the whole cache — **not
+      done, and the benchmark doesn't show it's needed yet**: caching
+      already makes the common "nothing changed" case free, and a small
+      edit still pays the full recompute, but at the vault sizes
+      actually benchmarked that's the same "tens of seconds on a few
+      thousand notes" cost already recorded below, not a new problem.
+      Revisit if a real edited vault's recompute cost is felt directly,
+      not speculatively.
 
 **Done when:** relaunching against an unchanged vault reloads positions
 without rerunning the simulation, and the benchmark numbers are recorded
-so "large vault" isn't a guess anymore.
+so "large vault" isn't a guess anymore. ✅ Verified: `cargo test --release`
+(87 tests, including 5 new `layout::cache` tests covering hash stability/
+sensitivity and cache round-tripping) and `cargo clippy --all-targets
+--release` both clean; end-to-end cache hit/miss/invalidation confirmed
+against `~/vaults/obg-test` (see above).
 
 Note: if the benchmark shows a real vault the user actually has is slow
 even on a cache hit's first computation, the fix is algorithmic —
 Barnes-Hut/quadtree repulsion, which likely means a different crate (or
 a hand-rolled force step; see the unpublished `fdg` rewrite noted under
 Phase 4/CLAUDE.md's layout section) — not more caching. Revisit that
-only if the benchmark proves it's needed, not speculatively here.
+only if the benchmark proves it's needed, not speculatively here. The
+benchmark below already shows this ceiling is real, not hypothetical:
+a first-launch (cache-miss) layout at a few thousand notes costs tens of
+seconds even with the convergence check, and would cost minutes without
+it — caching turns that into a one-time cost per vault-structure-change
+rather than a per-launch one, but doesn't remove it.
+
+## Phase 9.5 — Render interactivity: importance sizing & click-to-center ✅
+
+Not originally scoped as its own phase — added out of band (2026-08-23)
+after direct user feedback that node size in the render looked
+meaningful but wasn't ("Are the nodes sized? They look different
+sizes.") and a request for more interactivity generally. Inserted here
+(after Phase 9, before Phase 10) rather than renumbering later phases.
+
+- [x] **Size/color nodes by PageRank, not just depth.** Before this,
+      `draw_node`'s radius/color were purely a camera-distance cue (near
+      = bigger/brighter) — nothing in the render reflected the project's
+      actual differentiator (structural centrality), even though the
+      separate `pagerank` subcommand already computed it. `algo::
+      pagerank()` refactored into `algo::pagerank_scores()` (returns
+      every scored note's raw rank, not just a truncated top-N list
+      keyed by path string) plus a thin `pagerank()` wrapper for the CLI
+      subcommand, unchanged behavior. `render::run()` computes this once
+      against the *whole* vault graph, keyed by note path (not
+      `NodeIndex` — stays valid across a filtered `View`'s induced
+      subgraph, which has its own separate index space), so a note reads
+      as "important" consistently whether you're looking at the whole
+      vault or a filtered neighborhood — not recomputed and
+      re-relativized per view. `render::node_style()` blends it in:
+      radius = depth-lerped base (now 3–6px, narrowed from the old 3–8px
+      so the importance bonus stays visually distinguishable from the
+      depth cue) + up to 6px more for the most important node currently
+      on screen; color blends toward a warm highlight
+      (`IMPORTANT_HIGHLIGHT`) capped at 55% weight so depth shading is
+      never fully washed out. Source-tagged notes (excluded from
+      PageRank entirely — see `CLAUDE.md`'s note-taking conventions)
+      default to `importance: 0.0`, which always normalizes to the
+      bottom of the visible range regardless of what real notes score,
+      so a source hub doesn't visually dominate just by being high-degree
+      — same reasoning the CLI `pagerank`/`communities` commands already
+      apply, now carried into the render itself.
+- [x] **Mouse support — click a node to center the view on it.**
+      `print_frame` returns a new `ClickLayout` (cols/rows/header_rows
+      plus each visible note's fractional on-screen position,
+      `render_frame` now returns per-node screen fractions alongside the
+      `Pixmap` to build it) that a left-click on the *next* input event
+      resolves against (`ClickLayout::nearest_note`) — nearest by
+      on-screen distance, rejecting clicks outside the actual image area
+      (header lines, unused terminal margin). `ClickLayout` is keyed by
+      note **path**, not `NodeIndex`, for the same induced-subgraph
+      reason as the pagerank map above; the resolved path is looked up
+      against the whole graph (`find_node_by_path`, extracted and shared
+      with the `/` search prompt's existing selection logic) and applied
+      via a new shared `center_on()` helper — a click behaves exactly
+      like picking that note from `/` search, including the "only
+      default the hop count on the *first* centering" rule.
+      **Real bug caught on the first actual run in the user's terminal,
+      not by any test here** (this environment has no real tty to catch
+      it with): the initial implementation used `crossterm::event::
+      EnableMouseCapture` directly, called before the very first frame
+      printed. That command also turns on button-drag (`?1002h`) and
+      all-motion (`?1003h`) tracking, not just clicks — the instant the
+      mouse moved at all, a stream of motion escape sequences queued into
+      stdin, and `viuer`'s one-time Kitty-protocol handshake (forced by
+      that first `print_frame`, a strict prefix match against the
+      terminal's response to its own query) broke outright the moment any
+      of those landed first: `error: Kitty response:
+      [UnknownEscSeq(['[', '<', '3']), Char('5'), ...]` — SGR mouse-move
+      reports (button code 35, "moved, no button"), not the terminal's
+      real response. Fixed two ways, together closing the race rather
+      than just narrowing it: (1) hand-written `ENABLE_CLICK_TRACKING`/
+      `DISABLE_CLICK_TRACKING` escape strings (`?1000h`/`?1006h` only —
+      press/release with SGR extended coordinates, no motion modes) in
+      place of crossterm's all-modes command; (2) enabling click tracking
+      moved out of `TerminalGuard::enter` (before the first frame) to
+      *after* `interactive_loop`'s first successful `print_frame` call —
+      by which point the handshake has unconditionally already completed
+      and nothing can interleave with it again, for any reason, not just
+      motion events specifically.
+
+**Done when:** node size/color visibly reflects PageRank, and clicking a
+node centers the view on it. ✅ Verified: `cargo test --release` (92
+tests — new coverage includes `node_style`'s radius/color blending,
+`ClickLayout::nearest_note`'s hit-testing and out-of-bounds rejection,
+and a click-to-center test mirroring `interactive_loop`'s actual
+resolution path end-to-end) and `cargo clippy --all-targets --release`
+both clean; `cargo run --release -- ~/vaults/obg-test` and `... pagerank`
+both still run to completion with unchanged output shape. **Eyeball-
+verified enough to catch the mouse-capture crash above** (2026-08-23,
+real Kitty terminal) — the fix for that crash itself is not yet
+re-confirmed in the user's terminal, since this environment still has no
+real tty to test it with. Ask the
+user to confirm both once they've run it, and revisit the radius/color
+constants (`NODE_RADIUS_MIN/MAX`, `IMPORTANCE_RADIUS_BONUS`,
+`IMPORTANT_HIGHLIGHT`, `IMPORTANCE_COLOR_WEIGHT`) if the importance cue
+reads as too subtle or too loud in practice.
 
 ## Phase 10 — Typed links
 

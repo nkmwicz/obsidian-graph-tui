@@ -25,22 +25,29 @@ fn claim_notes(graph: &Graph<Note, ()>) -> Vec<NodeIndex> {
         .collect()
 }
 
-/// Ranks notes by PageRank (structural centrality) — a hand-rolled power
-/// iteration over `graph` directly (see CLAUDE.md: an embedded Cypher
-/// graph DB was tried for this phase and dropped over its C++ build
-/// weight — no crate or external process here, just petgraph + std).
-/// Restricted to non-`source`-tagged notes (see `SOURCE_TAG`) and
+/// Computes PageRank (structural centrality) for every non-`source`-tagged
+/// note in `graph` — a hand-rolled power iteration (see CLAUDE.md: an
+/// embedded Cypher graph DB was tried for this phase and dropped over its
+/// C++ build weight — no crate or external process here, just petgraph +
+/// std). Restricted to non-`source`-tagged notes (see `SOURCE_TAG`) and
 /// directed exactly as links are authored — unlike `shortest_path`/
 /// `communities`, PageRank's meaning comes from link direction (A links
 /// to B is A endorsing B), so it isn't given the undirected treatment
-/// `layout`'s physics graph and the other two queries below use. Highest
-/// rank first, truncated to `top`.
-pub fn pagerank(graph: &Graph<Note, ()>, top: usize) -> Vec<(String, f64)> {
+/// `layout`'s physics graph and the other two queries below use.
+///
+/// Returns a score for every included node (source-tagged notes are
+/// simply absent from the map, not present with a zero score, so a caller
+/// like `render`'s importance-based sizing can tell "excluded by design"
+/// apart from "genuinely the least-ranked note"). Exposed as its own
+/// function — not just an implementation detail of `pagerank()` below —
+/// because `render` needs per-node scores for every node currently on
+/// screen, not just a truncated top-N list keyed by path string.
+pub fn pagerank_scores(graph: &Graph<Note, ()>) -> HashMap<NodeIndex, f64> {
     let nodes = claim_notes(graph);
     let included: HashSet<NodeIndex> = nodes.iter().copied().collect();
     let n = nodes.len();
     if n == 0 {
-        return Vec::new();
+        return HashMap::new();
     }
     let index_of: HashMap<NodeIndex, usize> =
         nodes.iter().enumerate().map(|(i, &idx)| (idx, i)).collect();
@@ -89,10 +96,15 @@ pub fn pagerank(graph: &Graph<Note, ()>, top: usize) -> Vec<(String, f64)> {
         }
     }
 
-    let mut ranked: Vec<(String, f64)> = nodes
-        .iter()
-        .enumerate()
-        .map(|(i, &idx)| (graph[idx].path.to_string_lossy().into_owned(), rank[i]))
+    nodes.into_iter().zip(rank).collect()
+}
+
+/// Ranks notes by PageRank, highest first, truncated to `top` — the CLI's
+/// `pagerank` subcommand. A thin wrapper over `pagerank_scores()`.
+pub fn pagerank(graph: &Graph<Note, ()>, top: usize) -> Vec<(String, f64)> {
+    let mut ranked: Vec<(String, f64)> = pagerank_scores(graph)
+        .into_iter()
+        .map(|(idx, rank)| (graph[idx].path.to_string_lossy().into_owned(), rank))
         .collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
     ranked.truncate(top);
