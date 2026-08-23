@@ -527,7 +527,8 @@ vault or parser — a real design constraint for `TODO.md` Phase 8
 ## TODO.md is the source of direction — keep it current
 
 `TODO.md` (repo root) is the authoritative, living roadmap: a phased,
-checkable to-do list from the hello-world CLI through Cypher querying. This
+checkable to-do list from the hello-world CLI through graph algorithms
+(PageRank, community detection, path tracing) and beyond. This
 file (`CLAUDE.md`) holds the *why* and the architectural decisions; `TODO.md`
 holds *what's next and what's done*. When the two would otherwise disagree
 on sequencing, `TODO.md` wins — update this file's "MVP scope" section to
