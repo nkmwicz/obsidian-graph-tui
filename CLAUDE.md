@@ -182,6 +182,27 @@ of an Obsidian vault's note links — with a real graph model behind it
      same `ctx.print`/buffer/crossterm path as any other text in this app
      (including the Braille characters themselves, also plain Unicode);
      it doesn't change the "works in any terminal" portability at all.
+   - **Second correction, edges looked like "letters" rather than
+     lines:** the Bresenham line algorithm itself is correct — verified
+     directly against `ratatui`'s source (`ratatui-widgets/src/canvas/
+     line.rs`): `for_each_line_point` plots every intermediate dot along
+     the path, no gaps. The problem was thinness and aspect distortion,
+     not a drawing bug. Two fixes: (1) edges are now drawn as **two**
+     parallel Bresenham lines offset by ~1 Braille dot perpendicular to
+     the edge (`draw_edge()`/`dot_size()`) — a single-dot-wide diagonal
+     line only lights 1-2 of a cell's 8 dots, so neighboring cells along
+     it don't read as continuous; two adjacent dot-columns do. (2)
+     `bounds()` now returns an *isotropic* square (equal span on both
+     axes, centered on the data) instead of padding x and y
+     independently — Braille's 2×4 sub-cell grid already approximates a
+     square dot for a typical monospace font, so unequal spans were
+     stretching the shape whenever `fdg-sim` happened to spread further
+     on one axis than the other, which it doesn't guard against. This is
+     still a genuine ceiling, not fully solved: Braille dot-matrix text
+     will never look like anti-aliased raster lines — only a raster/Kitty-
+     protocol path (already the documented fallback, see "Explicitly out
+     of scope") gets genuinely smooth curves. These two fixes move it
+     further from "ASCII art" without changing that architecture.
 5. **Input**: `crossterm` (confirmed: 0.29.0, actively maintained; also a
    transitive dep of `ratatui`) for live keyboard-driven camera
    orbit/zoom/pan.

@@ -4,10 +4,11 @@ use std::io;
 use petgraph::graph::{Graph, NodeIndex};
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::symbols::Marker;
 use ratatui::text::Span;
-use ratatui::widgets::canvas::{Canvas, Line};
+use ratatui::widgets::canvas::{Canvas, Context, Line};
 
 use crate::layout::Position;
 use crate::vault::Note;
@@ -65,6 +66,15 @@ fn project(x: f64, y: f64, z: f64) -> (f64, f64) {
 /// pre-normalized to a known range), `fdg-sim` positions are in arbitrary
 /// simulation units that scale with graph size, so the viewport has to be
 /// derived from the actual projected points rather than fixed.
+///
+/// The span is the same on both axes (an equal-radius square around the
+/// data's center), not each axis's own independent data range: Braille's
+/// 2-wide×4-tall sub-cell grid already approximates a square dot for a
+/// typical monospace terminal font, so an isotropic mapping here is what
+/// keeps the projected shape from looking stretched — padding x and y
+/// independently would distort it whenever the layout happens to spread
+/// further along one axis than the other, which `fdg-sim` doesn't
+/// guarantee against.
 fn bounds(points: impl Iterator<Item = (f64, f64)>) -> ([f64; 2], [f64; 2]) {
     let (mut min_x, mut max_x) = (f64::MAX, f64::MIN);
     let (mut min_y, mut max_y) = (f64::MAX, f64::MIN);
@@ -80,13 +90,14 @@ fn bounds(points: impl Iterator<Item = (f64, f64)>) -> ([f64; 2], [f64; 2]) {
         return ([-1.0, 1.0], [-1.0, 1.0]);
     }
 
-    let pad = |min: f64, max: f64| {
-        let span = (max - min).max(1.0);
-        let margin = span * 0.1;
-        [min - margin, max + margin]
-    };
+    let center_x = (min_x + max_x) / 2.0;
+    let center_y = (min_y + max_y) / 2.0;
+    let half_span = ((max_x - min_x).max(max_y - min_y) / 2.0).max(0.5) * 1.1;
 
-    (pad(min_x, max_x), pad(min_y, max_y))
+    (
+        [center_x - half_span, center_x + half_span],
+        [center_y - half_span, center_y + half_span],
+    )
 }
 
 fn draw(
@@ -97,6 +108,7 @@ fn draw(
     y_bounds: [f64; 2],
 ) {
     let area = frame.area();
+    let dot = dot_size(area, x_bounds, y_bounds);
     let canvas = Canvas::default()
         .marker(Marker::Braille)
         .x_bounds(x_bounds)
@@ -113,13 +125,7 @@ fn draw(
                 else {
                     continue;
                 };
-                ctx.draw(&Line {
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                    color: Color::DarkGray,
-                });
+                draw_edge(ctx, x1, y1, x2, y2, dot, Color::Gray);
             }
 
             // Nodes are printed as a full-cell glyph via `ctx.print()`
@@ -136,6 +142,48 @@ fn draw(
         });
 
     frame.render_widget(canvas, area);
+}
+
+/// The size, in canvas data units, of one Braille sub-cell dot along each
+/// axis (the canvas maps `x_bounds`/`y_bounds` onto a `width*2` ×
+/// `height*4` dot grid).
+fn dot_size(area: Rect, x_bounds: [f64; 2], y_bounds: [f64; 2]) -> (f64, f64) {
+    let dots_wide = f64::from(area.width) * 2.0;
+    let dots_tall = f64::from(area.height) * 4.0;
+    (
+        (x_bounds[1] - x_bounds[0]) / dots_wide.max(1.0),
+        (y_bounds[1] - y_bounds[0]) / dots_tall.max(1.0),
+    )
+}
+
+/// Draws an edge as two parallel Bresenham lines, offset from each other
+/// by roughly one Braille dot perpendicular to the edge. A single-dot-wide
+/// diagonal line renders as a thread of visually disconnected Braille
+/// glyphs (each terminal cell shows only 1-2 of its 8 dots, so adjacent
+/// cells along the line don't read as continuous); two adjacent dot-wide
+/// lines fill enough of each cell to read as one continuous stroke.
+fn draw_edge(ctx: &mut Context, x1: f64, y1: f64, x2: f64, y2: f64, dot: (f64, f64), color: Color) {
+    ctx.draw(&Line {
+        x1,
+        y1,
+        x2,
+        y2,
+        color,
+    });
+
+    let (dx, dy) = (x2 - x1, y2 - y1);
+    let len = dx.hypot(dy);
+    if len < f64::EPSILON {
+        return;
+    }
+    let (ox, oy) = (-dy / len * dot.0, dx / len * dot.1);
+    ctx.draw(&Line {
+        x1: x1 + ox,
+        y1: y1 + oy,
+        x2: x2 + ox,
+        y2: y2 + oy,
+        color,
+    });
 }
 
 fn wait_for_keypress() -> io::Result<()> {
@@ -173,13 +221,26 @@ mod tests {
     }
 
     #[test]
-    fn bounds_pad_around_the_min_and_max_of_the_points() {
+    fn bounds_pad_around_the_center_of_the_points() {
         let points = [(0.0, 0.0), (10.0, 20.0)];
         let (x_bounds, y_bounds) = bounds(points.into_iter());
 
-        // 10% margin on a span of 10 (x) / 20 (y).
-        assert_eq!(x_bounds, [-1.0, 11.0]);
-        assert_eq!(y_bounds, [-2.0, 22.0]);
+        // Center (5, 10); half-span is the larger axis's span (20) / 2,
+        // padded 10% => 11.
+        assert_eq!(x_bounds, [-6.0, 16.0]);
+        assert_eq!(y_bounds, [-1.0, 21.0]);
+    }
+
+    #[test]
+    fn bounds_are_isotropic_even_when_data_spreads_unevenly() {
+        // Wide in x, narrow in y — the projected shape shouldn't stretch
+        // just because the layout happened to spread further on one axis.
+        let points = [(-50.0, -1.0), (50.0, 1.0)];
+        let (x_bounds, y_bounds) = bounds(points.into_iter());
+
+        let x_span = x_bounds[1] - x_bounds[0];
+        let y_span = y_bounds[1] - y_bounds[0];
+        assert!((x_span - y_span).abs() < f64::EPSILON);
     }
 
     #[test]
