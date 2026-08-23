@@ -98,13 +98,30 @@ step, owning the `Vec<Note>` index → `NodeIndex` mapping. Nothing later
 **Done when:** traversal calls return correct results for a known note,
 including the self-loop case.
 
-## Phase 4 — 3D force-directed layout
+## Phase 4 — 3D force-directed layout ✅
 
-- [ ] Convert the `petgraph` graph into an `fdg-sim` simulation
-      (`Dimensions::Three`)
-- [ ] Run the simulation to convergence, extract 3D coordinates per node
+`fdg-sim` pins `petgraph = "0.6"`, a different major version than this
+project's `petgraph` (0.8.3) — confirmed by building with both in the
+dependency tree (`cargo build` succeeds, two separate `petgraph` crates
+compiled side by side). Its `ForceGraph` (a `StableGraph` from that inner
+petgraph) is therefore a distinct type from `graph::Graph` and can't be
+constructed directly from it; `layout::layout()` copies nodes/edges across
+by iteration instead, tracking the correspondence in a `HashMap`.
 
-**Done when:** every node has a stable (x, y, z) position.
+- [x] Convert the `petgraph` graph into an `fdg-sim` simulation
+      (`Dimensions::Three`) — `src/layout/mod.rs`
+- [x] Run the simulation to convergence, extract 3D coordinates per node —
+      fixed budget of 1000 steps at `dt = 0.035` (Fruchterman-Reingold,
+      `scale = 45.0`, `cooloff_factor = 0.975`); `fdg-sim` has no built-in
+      stability check, and the cooloff factor decays forces toward zero
+      each step, so a generous fixed step count stands in for convergence
+      detection without adding one
+
+**Done when:** every node has a stable (x, y, z) position. ✅ Verified:
+unit tests in `src/layout/mod.rs` (every node gets a position, connected
+nodes land at distinct positions, a self-loop doesn't panic) plus
+`cargo run --release -- ~/vaults/obg-test` producing 14 positions for 14
+notes in ~20ms.
 
 ## Phase 5 — Static render
 

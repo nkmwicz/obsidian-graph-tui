@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod graph;
+mod layout;
 mod vault;
 
 use clap::Parser;
@@ -59,4 +60,7 @@ fn main() {
     let graph = graph::build(parsed);
     println!("Graph nodes: {}", graph.node_count());
     println!("Graph edges: {}", graph.edge_count());
+
+    let positions = layout::layout(&graph);
+    println!("Laid out {} node positions", positions.len());
 }

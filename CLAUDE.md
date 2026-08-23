@@ -73,8 +73,26 @@ of an Obsidian vault's note links — with a real graph model behind it
    `fdg`**, that crate name doesn't exist on crates.io. `fdg-sim` 0.9.1 is
    the actual published crate (from the `grantshandy/fdg` GitHub repo's
    `old` branch); last published Dec 2022 but verified working: it has
-   `Dimensions::Two`/`Dimensions::Three` and converts directly from a
-   `petgraph::Graph`. The `grantshandy/fdg` repo has since been rewritten
+   `Dimensions::Two`/`Dimensions::Three`. **Correction (Phase 4):** it does
+   *not* convert directly from a `petgraph::Graph` — `fdg-sim` pins
+   `petgraph = "0.6"`, a different major version than this project's
+   `petgraph` (0.8.3), so its `ForceGraph` (a `StableGraph` from that inner
+   petgraph) is a distinct type. Both versions coexist fine in the
+   dependency tree (`cargo build` compiles both side by side without
+   conflict), but the conversion has to happen by hand: `layout::layout()`
+   (`src/layout/mod.rs`) iterates the project's `Graph<Note, ()>` and
+   copies nodes/edges into a fresh `fdg_sim::ForceGraph`, tracking the
+   correspondence in a `HashMap`. **Also discovered in Phase 4:** because
+   Obsidian links are directional but `ForceGraph` is an undirected
+   multigraph, a mutual link (`A -> B` and `B -> A`, common in practice)
+   would otherwise become two parallel edges and get double the
+   Fruchterman-Reingold attraction of a one-way link — `layout::layout()`
+   collapses edges to unordered node pairs (`undirected_edge_pairs()`)
+   before feeding them in, so reciprocal links pull no harder than one-way
+   links, matching Obsidian's own graph view (a single undirected line
+   either way). Direction itself is untouched in `graph::Graph` — this
+   dedup only affects what feeds the physics, not later traversal/backlink
+   queries (Phase 7). The `grantshandy/fdg` repo has since been rewritten
    into a new unified `fdg` crate (nalgebra-based, const-generic over N
    dimensions, still actively developed as of March 2025) — but that
    rewrite has **never been published to crates.io**, only usable via a
@@ -216,9 +234,9 @@ match rather than letting them drift apart.
 
 ## Starting point for a fresh session
 
-Check `TODO.md` for the current phase. As of this writing Phases 0–3
-(hello world CLI, CLI args & config, vault parser, `petgraph` graph model)
-are done — next up is Phase 4 (`fdg-sim` 3D layout), then one static
-`ratatui` Braille frame (Phase 5) before adding physics tuning, camera
-interaction, or query features. That thin vertical slice is the thing to
-prove first.
+Check `TODO.md` for the current phase. As of this writing Phases 0–4
+(hello world CLI, CLI args & config, vault parser, `petgraph` graph model,
+`fdg-sim` 3D layout) are done — next up is Phase 5: one static `ratatui`
+Braille frame rendering the laid-out graph, before adding physics tuning,
+camera interaction, or query features. That thin vertical slice is the
+thing to prove first.
