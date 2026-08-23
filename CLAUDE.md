@@ -345,7 +345,9 @@ match rather than letting them drift apart.
 ## Starting point for a fresh session
 
 Check `TODO.md` for the current phase. As of this writing Phases 0–5
-(hello world CLI, CLI args & config, vault parser, `petgraph` graph model,
-`fdg-sim` 3D layout, static `ratatui` Braille render) are done — next up
-is Phase 6: live camera controls (orbit/zoom/pan via `crossterm`) over
-the same static frame, before query/traversal or layout-caching features.
+(hello world CLI, CLI args & config, vault parser, `petgraph` graph
+model, `fdg-sim` 3D layout, static render — now `tiny-skia`+`viuer`
+raster/Kitty-protocol, not the original `ratatui` Braille attempt; see
+"Rendering" above) are done — next up is Phase 6: live camera controls
+(orbit/zoom/pan via `crossterm`) over the same static frame, before
+query/traversal or layout-caching features.

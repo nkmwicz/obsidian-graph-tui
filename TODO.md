@@ -158,9 +158,14 @@ and rendered through a minimal ANSI/VT emulator to inspect the output
 directly) — produced a recognizable connected wireframe shape, not just
 "didn't crash." That real-render check is what caught the Phase 4 `NaN`
 bug above; the pipeline wouldn't have proven itself end-to-end without
-it. ⚠️ **Not yet re-verified for the raster/Kitty version** — see the
-pivot note below; that needs the user's own Kitty terminal, which this
-environment doesn't have.
+it. ✅ **Raster/Kitty version confirmed working in the user's real
+terminal** (this environment has no real Kitty terminal, so this
+couldn't be verified directly — see the pivot note below): user reports
+it "looks much better" / "produces a pretty graph" on `cargo run --
+~/vaults/obg-test`. `--release` behaves identically (expected — release
+vs. debug only affects compile optimization, not output). Aspect-ratio
+correctness (`PX_PER_COL`/`PX_PER_ROW`) not explicitly confirmed either
+way — asked, no answer yet; treat as still open until confirmed.
 
 **Rendering pivot, still within Phase 5:** after seeing the actual
 Braille output, direct feedback was that thin, jagged dot-matrix strokes
@@ -191,14 +196,23 @@ itself draws nothing. That's expected, not a rendering bug. It's also
 excluded from the physics graph entirely (see the Phase 4 correction
 above), so there's nothing left to "fix" here.
 
-- [ ] **Follow-up, not yet done:** get the user's own confirmation of
-      what this actually looks like in their real Kitty terminal, and
-      adjust `PX_PER_COL`/`PX_PER_ROW` (the per-cell raster oversampling,
-      currently an empirical 10×20 guess at typical terminal font pixel
-      aspect ratio, unverified against a real terminal) if the shape
-      looks stretched.
+- [x] Get the user's own confirmation of what this actually looks like
+      in their real Kitty terminal — done, see above, positive.
+- [ ] **Still open:** adjust `PX_PER_COL`/`PX_PER_ROW` (the per-cell
+      raster oversampling, currently an empirical 10×20 guess at typical
+      terminal font pixel aspect ratio) if the shape turns out to look
+      stretched — not yet explicitly confirmed either way.
 
 ## Phase 6 — Camera interaction
+
+Written before the Phase 5 rendering pivot (`CLAUDE.md`'s "Rendering"
+section) — re-read that before starting. "Live re-render" no longer
+means a `ratatui` `Frame`/`Buffer` diff redraw; it means recompute
+rotation → re-rasterize with `tiny-skia` → re-print via `viuer` each
+frame, which has different performance and terminal-state implications
+(raw mode/alternate screen needs deciding fresh — the static-print flow
+today doesn't use either) worth thinking through at the start of this
+phase, not assumed from the checklist below.
 
 - [ ] `crossterm` keyboard input loop
 - [ ] Orbit, zoom, pan; live re-render on input
