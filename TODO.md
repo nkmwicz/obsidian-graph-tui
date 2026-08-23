@@ -203,7 +203,58 @@ above), so there's nothing left to "fix" here.
       terminal font pixel aspect ratio) if the shape turns out to look
       stretched — not yet explicitly confirmed either way.
 
-## Phase 6 — Camera interaction
+## Phase 6 — Cypher querying & graph algorithms
+
+**Reprioritized ahead of camera interaction and petgraph-based
+query/traversal** (2026-08-22) — moved from last place to next, on
+request, after establishing (see `CLAUDE.md`'s "Why" and "Note-taking
+conventions" sections) that this project's actual research value for a
+historian's monograph notes is multi-hop path tracing, centrality, and
+community detection — not the rendering/camera work, which is polish on
+top of a static picture, not a different kind of capability.
+
+This is *not* just "add ad-hoc Cypher someday" as originally scoped —
+verified directly against both libraries' current docs before
+committing to the reprioritization, not assumed:
+
+- `petgraph` 0.8.3's `algo` module (checked via docs.rs) has `page_rank`,
+  `all_simple_paths`/`all_simple_paths_multi`, and shortest-path
+  (`dijkstra`/`astar`/`bidirectional_dijkstra`) — but **no betweenness
+  centrality and no community/modularity detection at all.**
+- Kùzu's `algo` extension (checked via its own docs) supports **Louvain
+  (community detection)**, **PageRank**, **betweenness centrality**,
+  and weakly/strongly connected components — a direct, complete match
+  for what's actually wanted (historiographical "camps" via community
+  detection, "structural hinge" claims via betweenness centrality),
+  not something worth hand-rolling or waiting on.
+
+Given that, there's no petgraph-only stopgap worth building first —
+petgraph would only cover path-tracing and PageRank, and community
+detection/betweenness would need Kùzu (or a hand-rolled Louvain/Brandes
+implementation, clearly worse than a maintained one) regardless. Go
+straight to Kùzu.
+
+- [ ] Introduce Kùzu as an embedded graph DB, loaded from the same
+      `ParsedVault`/`Graph<Note, ()>` data — decide during this phase
+      whether it fully replaces `petgraph` or runs alongside it (layout
+      and rendering currently depend on `petgraph::Graph`; unclear yet
+      whether that should also move to Kùzu or stay separate — don't
+      assume either way going in)
+- [ ] Multi-hop path query between two notes (argument lineage tracing)
+- [ ] Centrality ranking (PageRank and/or betweenness) to surface
+      structurally load-bearing notes
+- [ ] Community detection (Louvain) to surface historiographical
+      clusters/camps from link structure
+- [ ] Some way to see query results from the TUI — a plain text
+      list/table is a fine v1, doesn't need graph-view integration yet
+- [ ] Expose ad-hoc Cypher queries directly, once the above prove the
+      integration works, not before
+
+**Done when:** you can run at least one query from each category above
+(path, centrality, community) against a real vault and get a result
+that's plausibly useful, not just "doesn't crash."
+
+## Phase 7 — Camera interaction
 
 Written before the Phase 5 rendering pivot (`CLAUDE.md`'s "Rendering"
 section) — re-read that before starting. "Live re-render" no longer
@@ -220,7 +271,12 @@ phase, not assumed from the checklist below.
 
 **Done when:** you can freely orbit around the graph and it stays legible.
 
-## Phase 7 — Query & traversal
+## Phase 8 — Query & traversal
+
+Overlaps in spirit with Phase 6 (both are "query" features) but stays
+`petgraph`-native and view/filtering-focused rather than
+algorithm-focused — re-check against whatever Phase 6 actually built
+before starting, so this doesn't duplicate a Kùzu-backed equivalent.
 
 - [ ] N-hop neighborhood view centered on a given note
 - [ ] Filter by tag / folder
@@ -229,11 +285,11 @@ phase, not assumed from the checklist below.
 **Done when:** you can narrow from "whole vault" to "this note's local
 neighborhood" without restarting the tool.
 
-## Phase 8 — Layout caching & performance
+## Phase 9 — Layout caching & performance
 
 Placed here, not right after Phase 4, on purpose: the project's own
 priority is proving the interactive pipeline end-to-end first (nothing's
-rendered yet as of Phase 4), and Phase 7's filtering/N-hop views affect
+rendered yet as of Phase 4), and Phase 8's filtering/N-hop views affect
 whether this phase should cache one full-vault layout or per-view
 layouts — better scoped once that exists than guessed now.
 
@@ -276,17 +332,3 @@ Barnes-Hut/quadtree repulsion, which likely means a different crate (or
 a hand-rolled force step; see the unpublished `fdg` rewrite noted under
 Phase 4/CLAUDE.md's layout section) — not more caching. Revisit that
 only if the benchmark proves it's needed, not speculatively here.
-
-## Phase 9 — Cypher querying (future, confirmed direction, not v1)
-
-Promoted from "maybe revisit" to a real planned phase — this project is
-expected to grow into this, not just consider it.
-
-- [ ] Introduce Kùzu as an embedded graph DB alongside or in place of
-      `petgraph`
-- [ ] Expose ad-hoc Cypher queries from within the TUI
-- [ ] Scope further once Phases 0–7 are done and the query needs that
-      `petgraph` traversal can't cover are concrete
-
-**Done when:** not yet scoped — revisit once earlier phases surface real
-query needs.

@@ -40,15 +40,19 @@ of an Obsidian vault's note links — with a real graph model behind it
   asked, pointedly, whether any of this beats just searching in nvim —
   the honest answer is: 1-hop lookups don't need this tool at all,
   multi-hop/centrality/community-structure queries do, and that's
-  specifically Phase 9 (Kùzu/Cypher), not the rendering/camera phases.
-  Don't let rendering polish (Phase 5/6) get mistaken for where this
-  project's real value lives for this use case.
+  specifically the graph-algorithms phase (Kùzu/Cypher — see below), not
+  the rendering/camera phases. Don't let rendering polish get mistaken
+  for where this project's real value lives for this use case. **This
+  is also why the graph-algorithms phase was reprioritized ahead of
+  camera interaction and petgraph-based query/traversal** (2026-08-22,
+  see `TODO.md` Phase 6) — it's the actual differentiator, not a later
+  nice-to-have.
 
 ### Note-taking conventions this tool assumes (historian's vault)
 
 Worked out in the same conversation, not yet reflected in the fixture
-vault or parser — a real design constraint for Phase 7 (filtering) and
-Phase 9 (graph algorithms), not just user documentation:
+vault or parser — a real design constraint for `TODO.md` Phase 8
+(filtering) and Phase 6 (graph algorithms), not just user documentation:
 
 - **Atomic notes, not one note per book.** One claim/argument per note.
   Graph algorithms (centrality, community detection) need many small,
@@ -66,10 +70,10 @@ Phase 9 (graph algorithms), not just user documentation:
   vs `tags: [claim]`). A source note is trivially high-degree — every
   claim from that book points to it — which is a structural artifact of
   the note-taking pattern, not evidence the *book* is an important
-  hinge. Phase 9 centrality/community queries will need to filter these
-  out (or treat them as a distinct node type) to avoid every ranking
-  being dominated by "which book has the most notes" instead of "which
-  idea is structurally load-bearing."
+  hinge. `TODO.md` Phase 6's centrality/community queries will need to
+  filter these out (or treat them as a distinct node type) to avoid
+  every ranking being dominated by "which book has the most notes"
+  instead of "which idea is structurally load-bearing."
 - Page numbers belong in frontmatter (e.g. `page:: 42`), not baked into
   note titles — titles need to stay legible as graph node labels,
   autocomplete entries, and backlink-list entries, not become
@@ -79,7 +83,7 @@ Phase 9 (graph algorithms), not just user documentation:
   passing." Fine for neighborhood/centrality/community queries (pure
   structure is the signal), not fine for path-tracing an argument's
   *lineage* vs. its *rebuttal chain*. Revisit if that distinction turns
-  out to matter once Phase 9 is real — it would mean parsing some typed-
+  out to matter once Phase 6 is real — it would mean parsing some typed-
   link convention (frontmatter field or inline annotation), not
   currently planned or scoped.
 
@@ -93,7 +97,7 @@ Phase 9 (graph algorithms), not just user documentation:
    construct, so a CommonMark parser (`pulldown-cmark`) wouldn't catch
    wikilinks anyway — hand-rolled `regex` over the raw file text.
    `gray_matter` for YAML frontmatter (`tags:`, `aliases:`) — captured now,
-   consumed starting Phase 7 (filter by tag/folder).
+   consumed starting `TODO.md` Phase 8 (filter by tag/folder).
    - **Code-span stripping is required, not optional**: a naive regex scan
      can't tell a real `[[wikilink]]` from one written as
      `` `[[documentation]]` `` inside backticks. Fenced blocks and inline
@@ -125,7 +129,8 @@ Phase 9 (graph algorithms), not just user documentation:
      `Vec<Note>` index → `NodeIndex` mapping. Everything from Phase 4
      onward (layout, rendering, query) operates on the `petgraph::Graph`
      and never reaches back into `ParsedVault` — metadata needed for
-     filtering (Phase 7) reads off the node weight, not a side table.
+     filtering (`TODO.md` Phase 8) reads off the node weight, not a side
+     table.
 3. **3D layout**: [`fdg-sim`](https://crates.io/crates/fdg-sim) — **not
    `fdg`**, that crate name doesn't exist on crates.io. `fdg-sim` 0.9.1 is
    the actual published crate (from the `grantshandy/fdg` GitHub repo's
@@ -149,7 +154,7 @@ Phase 9 (graph algorithms), not just user documentation:
    links, matching Obsidian's own graph view (a single undirected line
    either way). Direction itself is untouched in `graph::Graph` — this
    dedup only affects what feeds the physics, not later traversal/backlink
-   queries (Phase 7). **Critical correction, found in Phase 5:** a
+   queries (`TODO.md` Phase 8). **Critical correction, found in Phase 5:** a
    self-loop makes a node its own neighbor in the physics graph, and
    `fdg-sim`'s Fruchterman-Reingold attraction divides by node-to-neighbor
    distance — zero, for a node and itself — producing `NaN` that spreads
@@ -178,7 +183,7 @@ Phase 9 (graph algorithms), not just user documentation:
      size. Fine at fixture-vault scale; the real cost on a large vault.
      Traversal (`petgraph` BFS/DFS) and parsing stay fast at any realistic
      vault size — this is specifically a layout-algorithm limitation, not
-     a whole-pipeline one. See `TODO.md` Phase 8 (layout caching &
+     a whole-pipeline one. See `TODO.md` Phase 9 (layout caching &
      performance, deliberately scoped for after the interactive pipeline
      is proven, not now) — caching only helps the *repeat-launch,
      unchanged-vault* case; it doesn't remove the O(n²) ceiling itself,
@@ -288,26 +293,33 @@ Phase 9 (graph algorithms), not just user documentation:
    image (Kitty graphics protocol, auto-detected; see "Rendering" above
    for why this replaced an initial `ratatui` Canvas+Braille attempt), no
    interaction yet — prove the rendering pipeline end to end first.
-4. Add camera controls (orbit/zoom via keyboard).
-5. Add basic query/traversal: local graph around one note (N-hop
-   neighborhood), filter by tag/folder.
-6. Layout caching & performance: persist computed positions so an
+4. **Graph algorithms & Cypher querying via [Kùzu](https://kuzudb.github.io/docs/)**
+   (single-file embedded DB, no server, native Rust bindings, Cypher
+   query language, and — critically — a built-in `algo` extension
+   covering PageRank, betweenness centrality, Louvain community
+   detection, and connected components). See `TODO.md` Phase 6.
+   **Reprioritized here, ahead of camera controls and petgraph-based
+   query/traversal, on 2026-08-22** once the project's actual
+   motivating use case (see "Why" above: a historian's monograph
+   research notes) made clear that multi-hop path tracing, centrality,
+   and community detection are the real differentiator over
+   `obsidian.nvim`'s built-in backlinks/search — not rendering or
+   camera polish. Verified `petgraph` itself lacks betweenness
+   centrality and community detection entirely before committing to
+   this (see "Note-taking conventions" above and `TODO.md` Phase 6 for
+   the specifics) — this isn't "add Cypher eventually," it's the
+   fastest path to the algorithms actually wanted.
+5. Add camera controls (orbit/zoom via keyboard). See `TODO.md` Phase 7.
+6. Add basic query/traversal: local graph around one note (N-hop
+   neighborhood), filter by tag/folder. See `TODO.md` Phase 8.
+7. Layout caching & performance: persist computed positions so an
    unchanged vault reloads instead of rerunning the simulation; replace
    the fixed 1000-step budget with a convergence check. See `TODO.md`
-   Phase 8 — placed after query/traversal deliberately, not right after
-   the layout work itself (Phase 4), per the "prove the pipeline first"
-   philosophy below.
-7. *(Later, not v1 — but a confirmed direction, not just a maybe)*
-   Introduce an embedded graph DB ([Kùzu](https://kuzudb.github.io/docs/) —
-   Cypher, single-file, no server, native Rust bindings) alongside or in
-   place of `petgraph`, to expose ad-hoc Cypher querying from within the
-   TUI. See `TODO.md` Phase 9 — scoped further once Phases 0–8 there surface
-   concrete query needs `petgraph` traversal can't cover.
+   Phase 9 — placed last deliberately, per the "prove the pipeline
+   first" philosophy below, not because it's unimportant.
 
 ## Explicitly out of scope for v1
 
-- Kùzu/Cypher querying for v1 specifically — see above, it's a confirmed
-  future phase (`TODO.md` Phase 9), just not part of the initial build.
 - Dataview-equivalent dynamic queries, or Obsidian plugin-ecosystem parity.
 - `neato -Tkitty` piped from Graphviz (external-tool static 2D rendering)
   — an earlier, simpler idea explored before "true 3D + true query"
@@ -405,6 +417,11 @@ Check `TODO.md` for the current phase. As of this writing Phases 0–5
 (hello world CLI, CLI args & config, vault parser, `petgraph` graph
 model, `fdg-sim` 3D layout, static render — now `tiny-skia`+`viuer`
 raster/Kitty-protocol, not the original `ratatui` Braille attempt; see
-"Rendering" above) are done — next up is Phase 6: live camera controls
-(orbit/zoom/pan via `crossterm`) over the same static frame, before
-query/traversal or layout-caching features.
+"Rendering" above) are done — next up is **Phase 6: Cypher querying &
+graph algorithms via Kùzu**, reprioritized ahead of camera interaction
+(now Phase 7) and petgraph-based query/traversal (now Phase 8) once the
+project's real motivating use case (a historian's monograph research
+notes — see "Why" above) made clear that's where the actual value is,
+not further rendering/camera polish. See `TODO.md` Phase 6 for why
+Kùzu specifically (its `algo` extension covers exactly what `petgraph`
+itself can't: betweenness centrality, community detection).
