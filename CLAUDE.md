@@ -127,82 +127,92 @@ of an Obsidian vault's note links — with a real graph model behind it
      unchanged-vault* case; it doesn't remove the O(n²) ceiling itself,
      which would need an algorithmic fix (Barnes-Hut, likely a different
      crate) if a real vault ever proves it necessary.
-4. **Rendering**: [`ratatui`](https://ratatui.rs/) (confirmed: 0.30.2,
-   actively maintained), using the `Canvas` widget's `Marker::Braille` mode
-   (2×4 sub-cell resolution — no GPU, no terminal graphics protocol
-   dependency, works in any terminal, not just Kitty). Reference
-   implementation to study first: ratatui's own `volatility-surface`
-   example (`examples/apps/volatility-surface` in the ratatui repo, still
-   present in the current tree) — it already does perspective projection +
-   interactive rotate/zoom via Canvas+Braille. **Decision: hand-roll
-   projection math following that example rather than depending on
-   `ratatui-3d` or `ratatui-wireframe`.** Both were considered and rejected:
-   both are tiny/unproven (525 and ~400 downloads, `ratatui-3d` first
-   published ~March 2026, `ratatui-wireframe` ~June 2026), and
-   `ratatui-wireframe` specifically has a red flag — its crates.io
-   `repository` field points to an unrelated GitHub repo
-   (`Vaishnav-Sabari-Girish/ComChan`, an unrelated serial-comm tool), which
-   means either bad metadata or a low-quality/squatted crate. Don't add
-   either without re-vetting.
-   - **Built in Phase 5** (`src/render/mod.rs`): `render::project()` uses
-     `Surface3D::project`'s exact rotate-Z-then-rotate-X + perspective-
-     divide scheme from the reference example, at a fixed camera angle
-     (Phase 6 makes it live). Canvas `x_bounds`/`y_bounds` are computed
-     from the actual projected points (10% margin) rather than fixed,
-     unlike the reference example — its input is pre-normalized to a
-     known range, but `fdg-sim` positions are in arbitrary simulation
-     units that scale with graph size, so the viewport has to fit
-     whatever the layout actually produced. Uses `ratatui::run()` (new in
-     0.30.0) for terminal init/draw/restore rather than hand-rolling it,
-     and `ratatui::crossterm` (re-exported) for the wait-for-any-keypress
-     step rather than adding a direct `crossterm` dependency — item 5
-     below still applies once Phase 6 needs a real input loop.
-   - **How this was actually verified, not just "didn't panic":** no
-     screenshot tool is available in this environment, so a throwaway
-     Python harness (`pty.openpty()` + a minimal ANSI/VT grid emulator,
-     not committed to the repo) drove the release binary in a real pty,
-     sized the window, captured the raw escape-sequence output, and
-     rendered it back to a text grid to inspect directly. This is what
-     caught the Phase 4 self-loop `NaN` bug above — the unit test suite
-     alone had already called that phase done.
-   - **Correction, found from user feedback on the first real render:**
-     nodes were originally drawn with `ctx.draw(&Points { .. })` using the
-     canvas's own `Marker::Braille` — a single sub-cell dot, the exact
-     same visual weight as the dots making up an edge's line. Nodes and
-     edges were visually indistinguishable, so the whole graph read as an
-     undifferentiated zigzag of dots rather than "nodes connected by
-     edges." Confirmed by rendering a known 3-node synthetic triangle in
-     isolation: the edges were genuinely correct connected line segments,
-     but nothing marked where a node was. Fixed by switching nodes to
-     `ctx.print(x, y, Span::styled("●", ..))` — `Context::print` always
-     renders on top of the marker layer regardless of the canvas's
-     configured marker, so nodes now get a distinctly bigger, brighter
-     full-cell glyph instead of a marker-layer dot. **Not a Kitty-protocol
-     or GPU dependency** — `●` (U+25CF) is plain Unicode text through the
-     same `ctx.print`/buffer/crossterm path as any other text in this app
-     (including the Braille characters themselves, also plain Unicode);
-     it doesn't change the "works in any terminal" portability at all.
-   - **Second correction, edges looked like "letters" rather than
-     lines:** the Bresenham line algorithm itself is correct — verified
-     directly against `ratatui`'s source (`ratatui-widgets/src/canvas/
-     line.rs`): `for_each_line_point` plots every intermediate dot along
-     the path, no gaps. The problem was thinness and aspect distortion,
-     not a drawing bug. Two fixes: (1) edges are now drawn as **two**
-     parallel Bresenham lines offset by ~1 Braille dot perpendicular to
-     the edge (`draw_edge()`/`dot_size()`) — a single-dot-wide diagonal
-     line only lights 1-2 of a cell's 8 dots, so neighboring cells along
-     it don't read as continuous; two adjacent dot-columns do. (2)
-     `bounds()` now returns an *isotropic* square (equal span on both
-     axes, centered on the data) instead of padding x and y
-     independently — Braille's 2×4 sub-cell grid already approximates a
-     square dot for a typical monospace font, so unequal spans were
-     stretching the shape whenever `fdg-sim` happened to spread further
-     on one axis than the other, which it doesn't guard against. This is
-     still a genuine ceiling, not fully solved: Braille dot-matrix text
-     will never look like anti-aliased raster lines — only a raster/Kitty-
-     protocol path (already the documented fallback, see "Explicitly out
-     of scope") gets genuinely smooth curves. These two fixes move it
-     further from "ASCII art" without changing that architecture.
+4. **Rendering**: raster image, composited with [`tiny-skia`](https://github.com/linebender/tiny-skia)
+   (confirmed: 0.12.0, 43M downloads, now under the Linebender org, updated
+   Feb 2026) and displayed inline via [`viuer`](https://github.com/atanunq/viuer)
+   (confirmed: 0.11.0, 1.2M downloads, updated Dec 2025), which auto-detects
+   the terminal's image protocol (Kitty graphics protocol, iTerm2, Sixel)
+   and falls back to half-block Unicode characters if none is available.
+   **This replaced an initial `ratatui` `Canvas`+`Marker::Braille` renderer
+   (built and shipped first in Phase 5) after direct user feedback that its
+   output — thin, jagged Braille dot-matrix strokes — was a hard ceiling,
+   not a tuning problem, and that genuinely smooth anti-aliased lines/depth
+   shading (comparable to e.g. deck.gl's `PointCloudLayer`,
+   <https://deck.gl/examples/point-cloud-layer>) were the actual goal.**
+   Confirmed the user's daily terminal is Kitty itself before committing to
+   this — the Kitty graphics protocol's native target — so the tradeoff
+   below is made with that specific fact in hand, not assumed.
+   - **The Braille attempt and what it taught (kept for the record, not
+     because it's still used):** the reference implementation studied
+     first was ratatui's own `volatility-surface` example
+     (`examples/apps/volatility-surface`) — its `Surface3D::project`
+     rotate-Z-then-rotate-X + perspective-divide scheme is still exactly
+     what `render::project()` uses today, unchanged by the rendering
+     pivot. Two real bugs were found and fixed while tuning the Braille
+     version, and both lessons carried forward: (1) nodes drawn with the
+     same `Marker::Braille` dot as edges are visually indistinguishable —
+     the raster renderer draws nodes as distinctly larger, depth-shaded
+     circles for exactly this reason. (2) `bounds()`/viewport framing must
+     be *isotropic* (equal span on both axes) rather than padding x/y
+     independently, because `fdg-sim` positions don't spread evenly across
+     axes and independent padding stretches the shape — the raster
+     renderer's `bounds()` keeps this fix verbatim. Verified empirically
+     (see below) that even with both fixes and doubled-up Bresenham
+     strokes, Braille's dot-matrix text ceiling was real, not a tuning
+     gap — confirming the pivot was necessary, not premature.
+   - **A real, independently-worthwhile bug caught during the pivot:**
+     the reference example's `CAMERA_DISTANCE = 4.0` constant is safe only
+     because its data is pre-normalized to a ~1.5-unit half-width.
+     `fdg-sim` positions routinely span tens of units (Fruchterman-
+     Reingold `scale = 45.0`), so with a fixed small camera distance,
+     `camera_distance + z2` in `project()` can go negative or near-zero
+     for realistic graphs — the perspective divide blows up or flips
+     sign, turning one node into a wild outlier that dominates the
+     viewport for reasons unrelated to the actual layout. This was
+     silently present in the Braille renderer too (the isotropic-bounds
+     fix partly masked it by absorbing the outlier into a bigger, blander
+     viewport rather than surfacing it). Caught by a unit test
+     (`camera_distance_scales_with_the_data_and_keeps_the_denominator_
+     positive`) once depth-based shading made the sign of the depth value
+     load-bearing rather than cosmetic. Fixed in `camera_distance_for()`
+     (`src/render/mod.rs`): camera distance now scales with the data's
+     own radius instead of a borrowed constant.
+   - **Portability, stated plainly:** this narrows "looks good" to
+     terminals implementing an image protocol (Kitty, WezTerm, Ghostty,
+     Konsole partial, iTerm2, Sixel-capable terminals) — reversing the
+     earlier Braille decision's explicit "works in any terminal, no
+     graphics-protocol dependency" requirement. `viuer`'s half-block
+     fallback means the tool doesn't hard-fail elsewhere, but that
+     fallback is coarser than the tuned Braille renderer was (1×2
+     sub-cell resolution vs. Braille's 2×4). This was a deliberate,
+     eyes-open tradeoff for this specific user's daily-driver terminal
+     (Kitty), not a default recommendation — see "Explicitly out of
+     scope" below, which used to list this as a mere fallback.
+   - **`image` crate: pin `default-features = false`.** `viuer`'s own
+     `Cargo.toml` only requests `image` with the `png` feature — enabling
+     default features on our own dependency line pulled in every codec
+     (`avif` via `rav1e`, `tiff`, `webp`, `exr`, `gif`, ...) neither we nor
+     `viuer`'s Kitty path need (confirmed from the wire format: the actual
+     Kitty escape sequence transmits raw pixels, `f=24`, not PNG), roughly
+     6x more crates to compile for zero benefit. Trimmed once noticed.
+   - **How this was actually verified, and the real limit of that
+     verification:** no screenshot tool or real Kitty terminal is
+     available in this environment. What *was* verified: the release
+     binary runs to completion (exit 0) against the fixture vault, the
+     Kitty-protocol detection handshake is genuinely attempted
+     (`_Gi=...a=q...` observed in the raw output), and — since this
+     sandbox isn't a real Kitty terminal — it correctly falls through to
+     `viuer`'s half-block fallback, which was confirmed to carry real,
+     non-constant color data (not a blank/degenerate image). What was
+     **not** verified from this environment: what the image actually
+     looks like through the real Kitty graphics protocol. That requires
+     the user to run it in their own terminal and report back — treat
+     this rendering pipeline as "believed correct, not yet eyes-verified"
+     until that happens.
+   - Earlier Braille-specific corrections (node/edge indistinguishability,
+     line thickness, isotropic bounds) are superseded by the above but
+     intentionally left in git history rather than scrubbed — they're
+     what established both bugs the raster renderer inherited fixes for.
 5. **Input**: `crossterm` (confirmed: 0.29.0, actively maintained; also a
    transitive dep of `ratatui`) for live keyboard-driven camera
    orbit/zoom/pan.
@@ -217,8 +227,10 @@ of an Obsidian vault's note links — with a real graph model behind it
 
 1. Parse a given vault path into a `petgraph` graph.
 2. Force-directed 3D layout via `fdg-sim`.
-3. Static rendered view in `ratatui` (Braille wireframe, no interaction yet)
-   — prove the rendering pipeline end to end first.
+3. Static rendered view — a `tiny-skia`-rasterized, `viuer`-displayed
+   image (Kitty graphics protocol, auto-detected; see "Rendering" above
+   for why this replaced an initial `ratatui` Canvas+Braille attempt), no
+   interaction yet — prove the rendering pipeline end to end first.
 4. Add camera controls (orbit/zoom via keyboard).
 5. Add basic query/traversal: local graph around one note (N-hop
    neighborhood), filter by tag/folder.
@@ -240,12 +252,17 @@ of an Obsidian vault's note links — with a real graph model behind it
 - Kùzu/Cypher querying for v1 specifically — see above, it's a confirmed
   future phase (`TODO.md` Phase 9), just not part of the initial build.
 - Dataview-equivalent dynamic queries, or Obsidian plugin-ecosystem parity.
-- Pre-rendered rotating-frame animation tricks for terminals without Braille
-  support — not worth the complexity for a personal tool.
-- Kitty-graphics-protocol static 2D rendering (`neato -Tkitty` piped from
-  Graphviz) — an earlier, simpler idea explored before "true 3D + true
-  query" became the actual requirement. Worth knowing it exists as a
-  fallback if the ratatui/Braille approach hits a wall, but not the plan.
+- `neato -Tkitty` piped from Graphviz (external-tool static 2D rendering)
+  — an earlier, simpler idea explored before "true 3D + true query"
+  became the actual requirement. Superseded, not merely deprioritized:
+  the project does now render via the Kitty graphics protocol (see
+  "Rendering" above), but as our own `tiny-skia`-rasterized 3D scene, not
+  a piped-through external tool's static export.
+- A non-graphics-protocol fallback renderer for terminals without image
+  protocol support beyond `viuer`'s built-in half-block fallback — see
+  "Rendering" above for the portability tradeoff this accepts. Revisit
+  only if that fallback's quality becomes a real problem, not
+  speculatively.
 
 ## Environment already provisioned (via `~/dotfiles/install.sh`)
 

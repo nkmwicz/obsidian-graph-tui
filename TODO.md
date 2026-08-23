@@ -145,25 +145,58 @@ First real visual milestone — prove the whole pipeline end-to-end.
       (`examples/apps/` in the ratatui repo) — used `Surface3D::project`'s
       rotate-Z-then-rotate-X + perspective-divide scheme directly as the
       reference for `render::project()`
-- [x] `ratatui` `Canvas` widget + `Marker::Braille`, hand-rolled
-      projection — `src/render/mod.rs`
-- [x] Draw the laid-out graph as a single static wireframe frame (nodes +
-      edges)
+- [x] ~~`ratatui` `Canvas` widget + `Marker::Braille`~~ — built first,
+      then superseded (see "Rendering pivot" below); `render::project()`'s
+      math is the one part that survived unchanged
+- [x] Draw the laid-out graph as a single static frame (nodes + edges)
 
 **Done when:** `obg /path/to/vault` renders a recognizable 3D graph shape
-in the terminal, once, no interaction yet. ✅ Verified: unit tests for
-the pure projection/bounds math in `src/render/mod.rs`, plus an actual
-run against `~/vaults/obg-test` in a real pty (captured and rendered
-through a minimal ANSI/VT emulator to inspect the output directly) —
-produced a recognizable connected wireframe shape, not just "didn't
-crash." That real-render check is what caught the Phase 4 `NaN` bug
-above; the pipeline wouldn't have proven itself end-to-end without it.
+in the terminal, once, no interaction yet. ✅ Verified (Braille version):
+unit tests for the pure projection/bounds math in `src/render/mod.rs`,
+plus an actual run against `~/vaults/obg-test` in a real pty (captured
+and rendered through a minimal ANSI/VT emulator to inspect the output
+directly) — produced a recognizable connected wireframe shape, not just
+"didn't crash." That real-render check is what caught the Phase 4 `NaN`
+bug above; the pipeline wouldn't have proven itself end-to-end without
+it. ⚠️ **Not yet re-verified for the raster/Kitty version** — see the
+pivot note below; that needs the user's own Kitty terminal, which this
+environment doesn't have.
+
+**Rendering pivot, still within Phase 5:** after seeing the actual
+Braille output, direct feedback was that thin, jagged dot-matrix strokes
+were a hard ceiling, not a tuning gap — the actual bar was something like
+deck.gl's `PointCloudLayer` (smooth anti-aliased circles, real depth
+shading). Confirmed the user's daily terminal is Kitty (the Kitty
+graphics protocol's native target) before committing to the swap. Now:
+`tiny-skia` rasterizes an anti-aliased scene (nodes as depth-shaded
+circles, edges as thin depth-shaded strokes) and `viuer` displays it
+inline, auto-detecting Kitty/iTerm/Sixel and falling back to half-block
+characters otherwise. Full reasoning, the two Braille-era bugs whose
+fixes carried forward (node/edge indistinguishability, isotropic
+bounds), and the portability tradeoff this accepts are in `CLAUDE.md`'s
+"Rendering" section — don't duplicate it here.
+
+A third, independent bug was caught mid-pivot: the reference example's
+`CAMERA_DISTANCE = 4.0` is only safe for its own pre-normalized data;
+`fdg-sim` positions are large enough that the perspective divide could
+go negative/blow up for realistic graphs, once depth became
+load-bearing for shading rather than cosmetic. Fixed in
+`camera_distance_for()` — camera distance now scales with the data's own
+radius. See `CLAUDE.md` for detail; this was likely silently affecting
+the Braille version too.
 
 Note: `~/vaults/obg-test/self-loop.md`'s self-referencing edge (verified
 in Phase 3) has no visible geometry in a wireframe — a node linking to
-itself draws nothing. That's expected, not a rendering bug. It's also now
+itself draws nothing. That's expected, not a rendering bug. It's also
 excluded from the physics graph entirely (see the Phase 4 correction
 above), so there's nothing left to "fix" here.
+
+- [ ] **Follow-up, not yet done:** get the user's own confirmation of
+      what this actually looks like in their real Kitty terminal, and
+      adjust `PX_PER_COL`/`PX_PER_ROW` (the per-cell raster oversampling,
+      currently an empirical 10×20 guess at typical terminal font pixel
+      aspect ratio, unverified against a real terminal) if the shape
+      looks stretched.
 
 ## Phase 6 — Camera interaction
 
