@@ -99,6 +99,19 @@ of an Obsidian vault's note links — with a real graph model behind it
    `git = "..."` Cargo dependency. Use published `fdg-sim = "0.9"` for v1 to
    avoid a git dependency; revisit the rewrite only if `fdg-sim` proves
    insufficient.
+   - **Known scaling limit, deliberately not addressed yet:** confirmed by
+     reading `fdg-sim`'s source directly, its Fruchterman-Reingold
+     repulsion is a plain O(n²) nested loop — no Barnes-Hut/quadtree
+     spatial partitioning — run for a fixed 1000 steps regardless of graph
+     size. Fine at fixture-vault scale; the real cost on a large vault.
+     Traversal (`petgraph` BFS/DFS) and parsing stay fast at any realistic
+     vault size — this is specifically a layout-algorithm limitation, not
+     a whole-pipeline one. See `TODO.md` Phase 8 (layout caching &
+     performance, deliberately scoped for after the interactive pipeline
+     is proven, not now) — caching only helps the *repeat-launch,
+     unchanged-vault* case; it doesn't remove the O(n²) ceiling itself,
+     which would need an algorithmic fix (Barnes-Hut, likely a different
+     crate) if a real vault ever proves it necessary.
 4. **Rendering**: [`ratatui`](https://ratatui.rs/) (confirmed: 0.30.2,
    actively maintained), using the `Canvas` widget's `Marker::Braille` mode
    (2×4 sub-cell resolution — no GPU, no terminal graphics protocol
@@ -135,17 +148,23 @@ of an Obsidian vault's note links — with a real graph model behind it
 4. Add camera controls (orbit/zoom via keyboard).
 5. Add basic query/traversal: local graph around one note (N-hop
    neighborhood), filter by tag/folder.
-6. *(Later, not v1 — but a confirmed direction, not just a maybe)*
+6. Layout caching & performance: persist computed positions so an
+   unchanged vault reloads instead of rerunning the simulation; replace
+   the fixed 1000-step budget with a convergence check. See `TODO.md`
+   Phase 8 — placed after query/traversal deliberately, not right after
+   the layout work itself (Phase 4), per the "prove the pipeline first"
+   philosophy below.
+7. *(Later, not v1 — but a confirmed direction, not just a maybe)*
    Introduce an embedded graph DB ([Kùzu](https://kuzudb.github.io/docs/) —
    Cypher, single-file, no server, native Rust bindings) alongside or in
    place of `petgraph`, to expose ad-hoc Cypher querying from within the
-   TUI. See `TODO.md` Phase 8 — scoped further once Phases 0–7 there surface
+   TUI. See `TODO.md` Phase 9 — scoped further once Phases 0–8 there surface
    concrete query needs `petgraph` traversal can't cover.
 
 ## Explicitly out of scope for v1
 
 - Kùzu/Cypher querying for v1 specifically — see above, it's a confirmed
-  future phase (`TODO.md` Phase 8), just not part of the initial build.
+  future phase (`TODO.md` Phase 9), just not part of the initial build.
 - Dataview-equivalent dynamic queries, or Obsidian plugin-ecosystem parity.
 - Pre-rendered rotating-frame animation tricks for terminals without Braille
   support — not worth the complexity for a personal tool.

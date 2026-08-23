@@ -158,7 +158,55 @@ time "fixing" it here.
 **Done when:** you can narrow from "whole vault" to "this note's local
 neighborhood" without restarting the tool.
 
-## Phase 8 — Cypher querying (future, confirmed direction, not v1)
+## Phase 8 — Layout caching & performance
+
+Placed here, not right after Phase 4, on purpose: the project's own
+priority is proving the interactive pipeline end-to-end first (nothing's
+rendered yet as of Phase 4), and Phase 7's filtering/N-hop views affect
+whether this phase should cache one full-vault layout or per-view
+layouts — better scoped once that exists than guessed now.
+
+Caching only fixes the *repeat-launch, nothing changed* case — it does
+not fix the underlying scaling problem. `fdg-sim`'s Fruchterman-Reingold
+repulsion is a plain O(n²) nested loop (confirmed directly in its source:
+every node checks every other node, no spatial partitioning/Barnes-Hut),
+run for a fixed 1000 steps regardless of graph size (Phase 4's `STEPS`/
+`STEP_DT` in `src/layout/mod.rs`) — trivial at the 14-note fixture vault,
+but this is the actual bottleneck on a large vault, not parsing (fast,
+O(n)) or traversal (petgraph BFS/DFS, O(V+E), also fast at any realistic
+size — see CLAUDE.md).
+
+- [ ] Benchmark the current fixed-1000-step layout against a synthetic
+      vault at a few sizes (e.g. 500 / 2,000 / 10,000 notes) to get real
+      numbers instead of estimates, before committing to a specific
+      caching/threshold design
+- [ ] Persist computed positions to disk, keyed by a hash of the vault's
+      resolved node/edge structure (not file mtimes — those are fragile
+      against touches/moves that don't change content); reload instead
+      of recomputing when the hash matches
+- [ ] Replace the fixed `STEPS = 1000` budget with a convergence check
+      (stop once max per-step node displacement drops below a
+      threshold) — cuts wasted computation on cache misses and the
+      first run alike, independent of caching
+- [ ] Record the benchmark numbers and the resulting practical
+      vault-size ceiling in `CLAUDE.md`
+- [ ] *(Stretch, only if the benchmark shows it's needed)* incremental
+      warm-start reflow: on a small vault edit, reuse cached positions as
+      the simulation's starting point and only reflow the changed
+      neighborhood, instead of invalidating the whole cache
+
+**Done when:** relaunching against an unchanged vault reloads positions
+without rerunning the simulation, and the benchmark numbers are recorded
+so "large vault" isn't a guess anymore.
+
+Note: if the benchmark shows a real vault the user actually has is slow
+even on a cache hit's first computation, the fix is algorithmic —
+Barnes-Hut/quadtree repulsion, which likely means a different crate (or
+a hand-rolled force step; see the unpublished `fdg` rewrite noted under
+Phase 4/CLAUDE.md's layout section) — not more caching. Revisit that
+only if the benchmark proves it's needed, not speculatively here.
+
+## Phase 9 — Cypher querying (future, confirmed direction, not v1)
 
 Promoted from "maybe revisit" to a real planned phase — this project is
 expected to grow into this, not just consider it.
