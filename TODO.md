@@ -18,15 +18,15 @@ Prove the binary exists and builds before any real logic.
 
 **Done when:** running `obg` prints `hello world`.
 
-## Phase 1 — CLI args & config surface
+## Phase 1 — CLI args & config surface ✅
 
 Vault path must be configurable, not hardcoded (CLAUDE.md, "Vault access").
 
-- [ ] Add `clap`, wire a vault-path positional/flag argument
-- [ ] Add `serde` + `toml` + `directories` for a config file (vault path,
+- [x] Add `clap`, wire a vault-path positional/flag argument
+- [x] Add `serde` + `toml` + `directories` for a config file (vault path,
       later: default filters, camera defaults)
-- [ ] CLI arg takes precedence over config file when both are present
-- [ ] Clear, non-panicking error message on a missing/invalid vault path
+- [x] CLI arg takes precedence over config file when both are present
+- [x] Clear, non-panicking error message on a missing/invalid vault path
 
 **Done when:** `obg /path/to/vault` and a config-file-supplied path both
 resolve to the same vault path, with a clean error on a bad path.
@@ -47,6 +47,11 @@ and an empty `.obsidian/` that must be skipped.
 - [ ] Extract plain markdown `[text](file.md)` links
 - [ ] Parse YAML frontmatter (`gray_matter`) for `tags:` / `aliases:`
 - [ ] Produce a node/edge list (in-memory structs, pre-`petgraph`)
+- [ ] Error out (clear message, exit 1) if the resolved vault path
+      contains zero `.md` files — Phase 1 only validates that the path is
+      a directory (e.g. `obg .` from this repo "succeeds" and resolves to
+      the repo root), so the parser is where a not-actually-a-vault path
+      needs to get caught, before it silently produces an empty graph
 
 **Done when:** running against `~/vaults/obg-test/` produces the correct
 node/edge count and correctly handles every edge case listed in

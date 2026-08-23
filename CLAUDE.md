@@ -190,8 +190,9 @@ match rather than letting them drift apart.
 
 ## Starting point for a fresh session
 
-Check `TODO.md` for the current phase. As of this writing Phase 0 (hello
-world CLI) is done — next up is Phase 1 (CLI args & config), then the
-parser → `petgraph` → `fdg-sim` layout → one static `ratatui` Braille frame
-before adding physics tuning, camera interaction, or query features. That
-thin vertical slice is the thing to prove first.
+Check `TODO.md` for the current phase. As of this writing Phases 0–1 (hello
+world CLI, CLI args & config) are done — next up is Phase 2 (the vault
+parser, tested against `~/vaults/obg-test`), then `petgraph` → `fdg-sim`
+layout → one static `ratatui` Braille frame before adding physics tuning,
+camera interaction, or query features. That thin vertical slice is the
+thing to prove first.
