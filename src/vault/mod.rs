@@ -1,6 +1,6 @@
 mod frontmatter;
 mod links;
-mod resolve;
+pub(crate) mod resolve;
 
 use std::path::{Path, PathBuf};
 
@@ -8,9 +8,10 @@ use resolve::{NoteIndex, Outcome};
 
 pub struct Note {
     pub path: PathBuf,
-    // Captured now per TODO.md Phase 2 scope; consumed starting Phase 7
-    // (filter by tag/folder).
-    #[allow(dead_code)]
+    // Captured since Phase 2; consumed starting Phase 6 (excluding
+    // `source`-tagged hub notes from centrality/community queries — see
+    // CLAUDE.md's note-taking conventions). Phase 8's tag/folder view
+    // filter is a separate, later consumer of the same field.
     pub tags: Vec<String>,
     #[allow(dead_code)]
     pub aliases: Vec<String>,

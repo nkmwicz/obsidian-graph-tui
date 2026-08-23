@@ -40,8 +40,9 @@ of an Obsidian vault's note links — with a real graph model behind it
   asked, pointedly, whether any of this beats just searching in nvim —
   the honest answer is: 1-hop lookups don't need this tool at all,
   multi-hop/centrality/community-structure queries do, and that's
-  specifically the graph-algorithms phase (Kùzu/Cypher — see below), not
-  the rendering/camera phases. Don't let rendering polish get mistaken
+  specifically the graph-algorithms phase (see below — PageRank/Louvain/
+  path-tracing, hand-rolled over `petgraph`), not the rendering/camera
+  phases. Don't let rendering polish get mistaken
   for where this project's real value lives for this use case. **This
   is also why the graph-algorithms phase was reprioritized ahead of
   camera interaction and petgraph-based query/traversal** (2026-08-22,
@@ -117,9 +118,13 @@ vault or parser — a real design constraint for `TODO.md` Phase 8
 2. **Graph model / query**: [`petgraph`](https://github.com/petgraph/petgraph)
    (confirmed on crates.io: 0.8.3, actively maintained) — in-memory graph
    with real traversal (BFS/DFS, shortest path, connected components, N-hop
-   neighborhoods). **Not Kùzu for v1** — deliberately deferred, see
-   "Explicitly out of scope" below. Swappable later without touching the
-   layout or rendering layers.
+   neighborhoods). **An embedded Cypher graph DB (Kùzu) was tried for
+   Phase 6's PageRank/community-detection needs and abandoned** (see
+   point 4 below for the full story) — `petgraph` was never replaced,
+   and the algorithms `petgraph` itself doesn't provide (Louvain
+   community detection, and the deliberate PageRank choice) are
+   hand-rolled directly over `Graph<Note, ()>` in `src/algo/mod.rs`
+   instead, no second graph representation involved.
    - **`ParsedVault` vs `petgraph::Graph` (resolved in Phase 3):** `Note`
      (path/tags/aliases) is the node weight — `Graph<Note, ()>` — rather
      than keeping `ParsedVault` alive as a second, parallel lookup
@@ -275,6 +280,24 @@ vault or parser — a real design constraint for `TODO.md` Phase 8
      line thickness, isotropic bounds) are superseded by the above but
      intentionally left in git history rather than scrubbed — they're
      what established both bugs the raster renderer inherited fixes for.
+   - **Aspect-ratio fix, resolved without an eyeball check (`TODO.md`
+     Phase 5's last open item):** the original `PX_PER_COL`/`PX_PER_ROW`
+     (10×20) was an empirical guess at typical terminal font pixel
+     aspect ratio — plausible but unconfirmed, and this sandbox can't
+     visually verify it either way. Found a way to sidestep needing the
+     user's eyes at all: `crossterm::terminal::window_size()` exposes
+     `TIOCGWINSZ`'s `ws_xpixel`/`ws_ypixel` fields, which Kitty fills in
+     correctly with the real per-cell pixel dimensions (confirmed by
+     reading crossterm 0.29's own source — `sys/unix.rs` maps these
+     straight from the ioctl `winsize` struct). `render::cell_pixel_size()`
+     now uses that real ratio directly when available, falling back to
+     the old 10×20 guess only when the terminal reports zero (crossterm's
+     own docs flag this as unreliable on some platforms — the `tty_ioctl`
+     man page calls the fields "unused" there). Since the isotropic-bounds
+     fix already guarantees equal span in data space on both axes, feeding
+     the pixel buffer the terminal's *actual* cell aspect ratio (instead
+     of a guessed one) removes the only remaining source of stretch by
+     construction, not by tuning a constant until it looks right.
 5. **Input**: `crossterm` (confirmed: 0.29.0, actively maintained; also a
    transitive dep of `ratatui`) for live keyboard-driven camera
    orbit/zoom/pan.
@@ -293,22 +316,134 @@ vault or parser — a real design constraint for `TODO.md` Phase 8
    image (Kitty graphics protocol, auto-detected; see "Rendering" above
    for why this replaced an initial `ratatui` Canvas+Braille attempt), no
    interaction yet — prove the rendering pipeline end to end first.
-4. **Graph algorithms & Cypher querying via [Kùzu](https://kuzudb.github.io/docs/)**
-   (single-file embedded DB, no server, native Rust bindings, Cypher
-   query language, and — critically — a built-in `algo` extension
-   covering PageRank, betweenness centrality, Louvain community
-   detection, and connected components). See `TODO.md` Phase 6.
-   **Reprioritized here, ahead of camera controls and petgraph-based
-   query/traversal, on 2026-08-22** once the project's actual
-   motivating use case (see "Why" above: a historian's monograph
+4. **Graph algorithms — PageRank, Louvain community detection, path
+   tracing — hand-rolled directly over `petgraph::Graph<Note, ()>`.** See
+   `TODO.md` Phase 6. **Reprioritized ahead of camera controls and
+   petgraph-based query/traversal, on 2026-08-22**, once the project's
+   actual motivating use case (see "Why" above: a historian's monograph
    research notes) made clear that multi-hop path tracing, centrality,
    and community detection are the real differentiator over
-   `obsidian.nvim`'s built-in backlinks/search — not rendering or
-   camera polish. Verified `petgraph` itself lacks betweenness
-   centrality and community detection entirely before committing to
-   this (see "Note-taking conventions" above and `TODO.md` Phase 6 for
-   the specifics) — this isn't "add Cypher eventually," it's the
-   fastest path to the algorithms actually wanted.
+   `obsidian.nvim`'s built-in backlinks/search — not rendering or camera
+   polish.
+   - **This phase was originally scoped, and initially built, as "Cypher
+     querying & graph algorithms via Kùzu"** (a single-file embedded
+     graph DB with Cypher and a built-in `algo` extension) — abandoned
+     entirely while actually implementing it (2026-08-23), for reasons
+     worth keeping in full since each was a real, verified dead end, not
+     a hunch:
+     1. The original claim that Kùzu's `algo` extension covers
+        betweenness centrality was wrong — its own docs list exactly
+        "K-Core Decomposition, Louvain, PageRank, Strongly/Weakly
+        Connected Components," and its documented betweenness workaround
+        is "export to NetworkX (Python), merge results back" — not
+        applicable to a Rust binary. Decided to use PageRank only for
+        centrality; a hand-rolled Brandes' betweenness (over `petgraph`,
+        which also lacks it) is still explicitly deferred, not built.
+        **Lesson: a library capability claim needs re-verifying at
+        implementation time, not just trusted from an earlier planning
+        pass** — docs (including this file's own prior notes) can be
+        wrong or stale.
+     2. The entire `kuzudb` GitHub org turned out to be archived — every
+        repo, same day, 2025-10-10 — caught by the user checking GitHub
+        directly, which this session's research hadn't done (only
+        crates.io + the docs site, neither of which surfaces "archived").
+        Kùzu's own README: "Kuzu is working on something new! We are
+        archiving the KuzuDB project... prior Kuzu releases will
+        continue to be usable... without modifications." So `kuzu`
+        0.11.3 is very likely the last release ever.
+     3. A real alternative-graph-DB survey followed, each candidate
+        rejected on a concretely verified fact, not a vibe: **`ryugraph`**
+        (Predictable Labs' active fork, same Rust API surface) — its
+        published crate's `build.rs` doesn't actually pass
+        `STATICALLY_LINKED_EXTENSIONS=algo` to CMake the way `kuzu`'s
+        does, and exposes no way to add it, despite docs claiming
+        otherwise (copied verbatim from Kùzu's own docs). **CozoDB**
+        (`cozo`) — pure Rust, PageRank/community-detection as a plain
+        Cargo feature, but Datalog instead of Cypher (a real paradigm
+        shift — shown side by side: Cypher's bare `*rel*` reachability
+        needs an explicit recursive rule in Datalog) and ~20 months quiet.
+        **`grafeo`** — pure Rust, PageRank *and* Louvain genuinely present
+        (confirmed via code search), the best feature match found, but
+        zero commits to `main` in ~2.5 months alongside unresolved open
+        data-integrity bugs (a store not persisting without `close()`;
+        a memory limit not enforced). **`sparrowdb`** — pure Rust,
+        genuinely Cypher-native, the most actively developed candidate by
+        far, but zero PageRank/Louvain anywhere in the codebase — doesn't
+        solve the algorithms half at all. **`indradb`** — mature, but no
+        Cypher and no PageRank. "KyuGraph" — active for 4 days total,
+        9 stars, not published anywhere, too immature to evaluate.
+     4. Decided (with the user) to stick with `kuzu` 0.11.3 anyway —
+        "frozen but proven" beat every live-but-flawed alternative found.
+     5. **Then hit a real, reproducible build failure even on `kuzu`
+        0.11.3**, purely from directly attempting it in this environment:
+        `kuzu` exact-pins its runtime `cxx = "=1.0.138"` but only loosely
+        constrains its build-dependency `cxx-build = "1.0"`, so Cargo
+        resolved a newer `cxx-build` (1.0.199) whose generated C++ symbol
+        names don't match what `cxxbridge-macro` 1.0.138 expects — an
+        undefined-symbol link failure (confirmed via `nm` on the compiled
+        `.a`: the real symbols carry an extra `$<N>$` version segment the
+        Rust-side glue never looks for). Fixable with an exact
+        `cxx-build = "=1.0.138"` pin — but reaching that fix meant
+        directly living through what a from-scratch Kùzu C++ rebuild
+        actually costs on this machine: 15+ minutes, multiple GB of build
+        artifacts, and an actual OOM kill at full parallelism on a normal
+        15GB desktop (competing with an already-open browser/mail client,
+        not an idle CI box). That's not a one-time cost: this file's own
+        planned `~/dotfiles/install.sh` integration does a fresh clone +
+        build on every (re)install (mirroring the `fancy-cat` pattern),
+        so every future install/update would pay it again. **Decided with
+        the user: drop the embedded-graph-DB approach entirely** rather
+        than accept that tax for a personal CLI tool meant to install as
+        easily as `fancy-cat` — the "frozen but proven" cost/benefit
+        calculus from step 4 stopped holding once the actual build weight
+        was felt firsthand, not just reasoned about.
+   - **Final architecture: `src/algo/mod.rs` hand-rolls PageRank
+     (damped power iteration) and Louvain community detection (Blondel et
+     al. 2008 — local-moving + aggregation, repeated to convergence)
+     directly over `Graph<Note, ()>`**, no external dependency at all —
+     pure Rust, builds in seconds like the rest of this stack. Both are
+     well-specified, standard algorithms; "more Rust code to write and
+     verify ourselves" was accepted deliberately, not taken as a
+     reluctant fallback. `shortest_path()` is a plain BFS using
+     `Graph::neighbors_undirected` — `petgraph` already provides that
+     traversal primitive, no algorithm needed to hand-roll there.
+   - **Source-note exclusion for centrality/community, not path:** per
+     this file's note-taking-conventions section, a source note
+     (`tags: [source]`) is trivially high-degree by construction — every
+     claim from that book links back to it — which would otherwise
+     dominate every PageRank/Louvain ranking with "which book has the
+     most notes" instead of "which idea is structurally load-bearing."
+     Both `algo::pagerank()` and `algo::communities()` restrict their
+     computation to non-`source`-tagged notes (`claim_notes()`).
+     `algo::shortest_path()` deliberately does **not** filter — the user
+     names both endpoints explicitly, so excluding a source note there
+     would just break legitimate queries that happen to route through
+     one.
+   - **PageRank stays directed; community detection and path tracing are
+     undirected.** PageRank's whole meaning comes from link direction (A
+     links to B is A endorsing B), so it's computed over outgoing edges
+     as authored. Louvain and `shortest_path`, by contrast, get the same
+     undirected treatment `layout::undirected_edge_pairs()` already gives
+     the physics graph — there's no typed-link distinction yet (`TODO.md`
+     Phase 10, deliberately deferred) between an argument's lineage and
+     its rebuttal chain, so "which notes cluster together" and "is there
+     a connecting path" don't need direction to be meaningful. Self-loops
+     are excluded from all three, same reasoning as the physics graph: a
+     note linking to itself has no meaningful path/centrality/community
+     semantics.
+   - CLI surface unchanged from the original Kùzu-backed design: `obg
+     <vault> pagerank [--top N]`, `obg <vault> communities`, `obg <vault>
+     path <from> <to>` as clap subcommands, defaulting to today's render
+     behavior when none is given (`obg <vault>` is unchanged). Note-name
+     resolution for `path` reuses `vault::resolve::NoteIndex` — the exact
+     same case-insensitive/basename/alphabetical-tie-break rules a user
+     already relies on for wikilinks (`resolve` widened from
+     module-private to `pub(crate)` for this reuse).
+   - Ad-hoc querying (`TODO.md`'s last original Phase 6 bullet, "expose
+     ad-hoc Cypher") no longer applies — there's no query engine to
+     expose one against. Not reopened as a goal; if arbitrary querying is
+     wanted later, it would mean something else entirely (e.g. a small
+     expression language over `petgraph`), unscoped for now.
 5. Add camera controls (orbit/zoom via keyboard). See `TODO.md` Phase 7.
 6. Add basic query/traversal: local graph around one note (N-hop
    neighborhood), filter by tag/folder. See `TODO.md` Phase 8.
@@ -413,15 +548,16 @@ match rather than letting them drift apart.
 
 ## Starting point for a fresh session
 
-Check `TODO.md` for the current phase. As of this writing Phases 0–5
+Check `TODO.md` for the current phase. As of this writing Phases 0–6
 (hello world CLI, CLI args & config, vault parser, `petgraph` graph
 model, `fdg-sim` 3D layout, static render — now `tiny-skia`+`viuer`
 raster/Kitty-protocol, not the original `ratatui` Braille attempt; see
-"Rendering" above) are done — next up is **Phase 6: Cypher querying &
-graph algorithms via Kùzu**, reprioritized ahead of camera interaction
-(now Phase 7) and petgraph-based query/traversal (now Phase 8) once the
+"Rendering" above — and graph algorithms: PageRank, Louvain community
+detection, path tracing, all hand-rolled over `petgraph` in
+`src/algo/mod.rs` after an embedded Cypher graph DB was tried and
+abandoned — see `TODO.md` Phase 6 and this file's point 4 above for the
+full story) are done — next up is **Phase 7: camera interaction**
+(orbit/zoom via keyboard), reprioritized behind Phase 6 once the
 project's real motivating use case (a historian's monograph research
-notes — see "Why" above) made clear that's where the actual value is,
-not further rendering/camera polish. See `TODO.md` Phase 6 for why
-Kùzu specifically (its `algo` extension covers exactly what `petgraph`
-itself can't: betweenness centrality, community detection).
+notes — see "Why" above) made clear the graph-algorithms phase was where
+the actual value was, not rendering/camera polish.

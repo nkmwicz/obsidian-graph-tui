@@ -22,11 +22,11 @@ const ROTATION_Z: f64 = 0.3;
 /// placement instead of one that's degenerately close.
 const MIN_CAMERA_DISTANCE: f64 = 4.0;
 
-/// Raster oversampling per terminal cell. Terminal fonts are roughly
-/// twice as tall as wide in pixels, so rows get twice the per-cell pixel
-/// budget of columns — matched empirically against a real Kitty terminal,
-/// not derived from queryable font metrics (none are available to a
-/// terminal application).
+/// Fallback raster oversampling per terminal cell, used only when the
+/// terminal doesn't report real font-cell pixel dimensions (see
+/// `cell_pixel_size`). Terminal fonts are roughly twice as tall as wide in
+/// pixels, so rows get twice the per-cell pixel budget of columns — an
+/// empirical guess, not derived from queryable metrics.
 const PX_PER_COL: u32 = 10;
 const PX_PER_ROW: u32 = 20;
 
@@ -68,10 +68,11 @@ pub fn run(graph: &Graph<Note, ()>, positions: &HashMap<NodeIndex, Position>) ->
     let (x_bounds, y_bounds) = bounds(projected.values().map(|p| (p.x, p.y)));
 
     let (term_cols, term_rows) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
+    let (px_per_col, px_per_row) = cell_pixel_size();
     let cols = term_cols.saturating_sub(2).max(20);
     let rows = term_rows.saturating_sub(4).max(10);
-    let width = u32::from(cols) * PX_PER_COL;
-    let height = u32::from(rows) * PX_PER_ROW;
+    let width = (f64::from(cols) * px_per_col).round() as u32;
+    let height = (f64::from(rows) * px_per_row).round() as u32;
 
     let pixmap = rasterize(graph, &projected, x_bounds, y_bounds, width, height);
     let image = pixmap_to_image(&pixmap);
@@ -85,6 +86,25 @@ pub fn run(graph: &Graph<Note, ()>, positions: &HashMap<NodeIndex, Position>) ->
     viuer::print(&image, &config)
         .map(|_| ())
         .map_err(io::Error::other)
+}
+
+/// Real per-cell pixel dimensions (width, height), read from the
+/// terminal's own report (`TIOCGWINSZ`'s `ws_xpixel`/`ws_ypixel`, exposed
+/// as `crossterm::terminal::window_size()`) when available — replacing
+/// the `PX_PER_COL`/`PX_PER_ROW` guess with the terminal's actual
+/// font-cell aspect ratio, so an isotropic viewport (see `bounds()`)
+/// actually renders isotropic instead of stretched by a mismatched guess.
+/// Kitty fills these in correctly; crossterm's own docs note some
+/// terminals report zero here ("unused" per the tty_ioctl man page), so
+/// fall back to the empirical constants when that happens.
+fn cell_pixel_size() -> (f64, f64) {
+    match ratatui::crossterm::terminal::window_size() {
+        Ok(ws) if ws.width > 0 && ws.height > 0 && ws.columns > 0 && ws.rows > 0 => (
+            f64::from(ws.width) / f64::from(ws.columns),
+            f64::from(ws.height) / f64::from(ws.rows),
+        ),
+        _ => (f64::from(PX_PER_COL), f64::from(PX_PER_ROW)),
+    }
 }
 
 /// Picks a camera distance proportional to the data's own scale: 2.5x the
@@ -382,6 +402,17 @@ mod tests {
             );
             assert!(depth.is_finite() && depth > 0.0);
         }
+    }
+
+    #[test]
+    fn cell_pixel_size_is_always_positive() {
+        // Can't force a real terminal's window_size() report in a test
+        // environment (there may be no tty at all here), so this only
+        // guards that whichever branch runs — real report or the
+        // PX_PER_COL/PX_PER_ROW fallback — produces usable dimensions,
+        // never zero or negative.
+        let (w, h) = cell_pixel_size();
+        assert!(w > 0.0 && h > 0.0);
     }
 
     #[test]

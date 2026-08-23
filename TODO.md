@@ -198,12 +198,19 @@ above), so there's nothing left to "fix" here.
 
 - [x] Get the user's own confirmation of what this actually looks like
       in their real Kitty terminal — done, see above, positive.
-- [ ] **Still open:** adjust `PX_PER_COL`/`PX_PER_ROW` (the per-cell
-      raster oversampling, currently an empirical 10×20 guess at typical
-      terminal font pixel aspect ratio) if the shape turns out to look
-      stretched — not yet explicitly confirmed either way.
+- [x] `PX_PER_COL`/`PX_PER_ROW` aspect ratio — resolved without needing an
+      eyeball check: `render::cell_pixel_size()` now reads the terminal's
+      actual font-cell pixel dimensions via `crossterm::terminal::
+      window_size()` (`TIOCGWINSZ`'s `ws_xpixel`/`ws_ypixel`, which Kitty
+      fills in correctly) and uses those directly, falling back to the
+      old empirical 10×20 guess only when the terminal reports zero
+      (crossterm's own docs note this is unreliable on some platforms).
+      Since the isotropic-bounds fix (Phase 5, above) already guarantees
+      equal data-space span on both axes, using the terminal's real
+      per-cell aspect ratio for the pixel buffer removes the only
+      remaining source of stretch — no more guessing needed.
 
-## Phase 6 — Cypher querying & graph algorithms
+## Phase 6 — Graph algorithms: PageRank, community detection, path tracing
 
 **Reprioritized ahead of camera interaction and petgraph-based
 query/traversal** (2026-08-22) — moved from last place to next, on
@@ -213,46 +220,93 @@ historian's monograph notes is multi-hop path tracing, centrality, and
 community detection — not the rendering/camera work, which is polish on
 top of a static picture, not a different kind of capability.
 
-This is *not* just "add ad-hoc Cypher someday" as originally scoped —
-verified directly against both libraries' current docs before
-committing to the reprioritization, not assumed:
+**This phase was originally scoped as "Cypher querying & graph
+algorithms via Kùzu" and pivoted away from Kùzu entirely while actually
+implementing it (2026-08-23).** Kept here as the record of why, since it
+was a real, hard-won decision, not a footnote:
 
 - `petgraph` 0.8.3's `algo` module (checked via docs.rs) has `page_rank`,
   `all_simple_paths`/`all_simple_paths_multi`, and shortest-path
-  (`dijkstra`/`astar`/`bidirectional_dijkstra`) — but **no betweenness
-  centrality and no community/modularity detection at all.**
-- Kùzu's `algo` extension (checked via its own docs) supports **Louvain
-  (community detection)**, **PageRank**, **betweenness centrality**,
-  and weakly/strongly connected components — a direct, complete match
-  for what's actually wanted (historiographical "camps" via community
-  detection, "structural hinge" claims via betweenness centrality),
-  not something worth hand-rolling or waiting on.
+  (`dijkstra`/`astar`/`bidirectional_dijkstra`) — but no betweenness
+  centrality and no community/modularity detection built in.
+  **`communities()`/`pagerank()` in `src/algo/mod.rs` don't use
+  `petgraph::algo::page_rank` either, in the end** — see below.
+- Kùzu's `algo` extension looked like a direct match (Louvain, PageRank,
+  connected components) and was added as a dependency, with a working
+  `src/kuzu/mod.rs` written and unit-tested against it. Abandoned after
+  directly hitting, in order: (1) betweenness centrality wasn't actually
+  in the extension despite this file's original claim (Kùzu's own docs
+  only ever promised it via a Python/NetworkX round-trip, not applicable
+  to a Rust binary — decided to use PageRank-only for centrality, which
+  survived the later pivot); (2) the entire `kuzudb` GitHub org turned
+  out to be archived (Oct 2025 — the company is "working on something
+  new" per their own README) — `kuzu` 0.11.3 works today but is very
+  likely the last release ever; (3) the actively-maintained community
+  fork `ryugraph` was considered and rejected — same Rust API, but its
+  published crate's build script doesn't actually wire up the `algo`
+  extension despite its docs claiming otherwise (verified directly:
+  `kuzu`'s `build.rs` passes `-DSTATICALLY_LINKED_EXTENSIONS=algo` to
+  CMake, `ryugraph`'s doesn't, and there's no Cargo feature or env var to
+  add it); (4) several pure-Rust alternatives (CozoDB/Datalog, `grafeo`,
+  `sparrowdb`, `indradb`, "kyugraph") were evaluated and each rejected on
+  a concrete, verified fact — wrong query paradigm, a live-but-stalled
+  project with open data-integrity bugs, missing algorithms entirely,
+  missing Cypher entirely, or too immature to evaluate (see `CLAUDE.md`
+  for the specifics on each); (5) even sticking with `kuzu` 0.11.3 hit a
+  real, reproducible build failure in this environment — a `cxx`/
+  `cxx-build` version-skew undefined-symbol link error, fixable with an
+  exact-version pin, but which surfaced while directly experiencing what
+  a from-scratch Kùzu C++ rebuild actually costs: 15+ minutes, several GB
+  of build artifacts, and an actual OOM kill at full parallelism on a
+  normal 15GB desktop. That cost isn't a one-time tax — `CLAUDE.md`'s own
+  planned `~/dotfiles/install.sh` integration does a fresh clone + build
+  on every (re)install, so every future install/update would pay it
+  again. For a personal CLI tool meant to be as easy to install as
+  `fancy-cat`, that's a bad trade for centrality/community detection
+  specifically — decided with the user to drop the embedded-graph-DB
+  approach entirely rather than accept it.
+- **Final decision: hand-roll PageRank and Louvain community detection
+  directly over `petgraph::Graph<Note, ()>`** — pure Rust, no C++
+  toolchain, builds in seconds like the rest of this stack. Both are
+  well-specified, standard algorithms (power-iteration PageRank; Blondel
+  et al. 2008 Louvain modularity optimization) — "more Rust code to
+  write and verify ourselves," accepted deliberately over any of the
+  above, not a fallback taken reluctantly.
 
-Given that, there's no petgraph-only stopgap worth building first —
-petgraph would only cover path-tracing and PageRank, and community
-detection/betweenness would need Kùzu (or a hand-rolled Louvain/Brandes
-implementation, clearly worse than a maintained one) regardless. Go
-straight to Kùzu.
-
-- [ ] Introduce Kùzu as an embedded graph DB, loaded from the same
-      `ParsedVault`/`Graph<Note, ()>` data — decide during this phase
-      whether it fully replaces `petgraph` or runs alongside it (layout
-      and rendering currently depend on `petgraph::Graph`; unclear yet
-      whether that should also move to Kùzu or stay separate — don't
-      assume either way going in)
-- [ ] Multi-hop path query between two notes (argument lineage tracing)
-- [ ] Centrality ranking (PageRank and/or betweenness) to surface
-      structurally load-bearing notes
-- [ ] Community detection (Louvain) to surface historiographical
-      clusters/camps from link structure
-- [ ] Some way to see query results from the TUI — a plain text
+- [x] ~~Introduce Kùzu as an embedded graph DB~~ — reverted; see above.
+      No external graph DB or query engine. `src/algo/mod.rs` takes
+      `&Graph<Note, ()>` directly (same shape as `layout::layout`/
+      `render::run`) and computes everything in-process.
+- [x] Multi-hop path query between two notes (argument lineage tracing)
+      — `algo::shortest_path()`, a plain BFS over `Graph::
+      neighbors_undirected` (direction-blind — see CLAUDE.md), exposed as
+      `obg <vault> path <from> <to>`.
+- [x] Centrality ranking (PageRank) to surface structurally load-bearing
+      notes — `algo::pagerank()`, a hand-rolled damped power iteration,
+      exposed as `obg <vault> pagerank`. Restricted to non-`source`-tagged
+      notes (see CLAUDE.md's note-taking conventions) so a book's source
+      note doesn't dominate every ranking just by being linked from every
+      claim about it. Betweenness centrality stays explicitly deferred —
+      `petgraph` doesn't have it either and hand-rolling Brandes' wasn't
+      done this phase.
+- [x] Community detection (Louvain) to surface historiographical
+      clusters/camps from link structure — `algo::communities()`, a
+      hand-rolled multi-level Louvain (local-moving + aggregation,
+      repeated to convergence) over the undirected claim-note subgraph;
+      same source-note exclusion as PageRank.
+- [x] Some way to see query results from the TUI — a plain text
       list/table is a fine v1, doesn't need graph-view integration yet
-- [ ] Expose ad-hoc Cypher queries directly, once the above prove the
-      integration works, not before
+- [ ] ~~Expose ad-hoc Cypher queries directly~~ — no longer applicable;
+      there's no query engine to expose. If ad-hoc querying is wanted
+      later, it'd mean something else entirely (e.g. a small expression
+      language over `petgraph`), not scoped now.
 
 **Done when:** you can run at least one query from each category above
 (path, centrality, community) against a real vault and get a result
-that's plausibly useful, not just "doesn't crash."
+that's plausibly useful, not just "doesn't crash." ✅ Verified against
+`~/vaults/obg-test`: `pagerank`/`communities`/`path` all produce
+plausible, non-degenerate output; the no-subcommand render path is
+unchanged; full test suite (53 tests) and `cargo clippy` both clean.
 
 ## Phase 7 — Camera interaction
 
@@ -273,10 +327,21 @@ phase, not assumed from the checklist below.
 
 ## Phase 8 — Query & traversal
 
-Overlaps in spirit with Phase 6 (both are "query" features) but stays
-`petgraph`-native and view/filtering-focused rather than
-algorithm-focused — re-check against whatever Phase 6 actually built
-before starting, so this doesn't duplicate a Kùzu-backed equivalent.
+Overlaps in spirit with Phase 6 (both are "query" features, and both are
+now `petgraph`-native — Phase 6 no longer pulls in a separate graph DB,
+see its own section above) but stays distinct in *purpose*: Phase 6 is
+global structural analysis (rank/cluster/connect the whole graph), this
+phase is local view/filtering (narrow what's rendered around one note).
+Worth reusing what already exists rather than re-deriving it: `algo::
+shortest_path()` (`src/algo/mod.rs`) already does undirected BFS from a
+start note — an N-hop neighborhood view is the same traversal with a hop
+count bound instead of a target note, not a new algorithm. `algo::
+claim_notes()`'s tag-based filter is a narrow, hardcoded precedent
+(exclude `source`-tagged notes from two specific algorithms) — this
+phase's "filter by tag/folder" is a genuinely more general, user-facing
+feature, not something to just extend from that function, but the same
+`Note::tags`/path-prefix data it'd read is already there on the node
+weight.
 
 - [ ] N-hop neighborhood view centered on a given note
 - [ ] Filter by tag / folder
