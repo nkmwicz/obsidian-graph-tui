@@ -69,22 +69,31 @@ node/edge count and correctly handles every edge case listed in
 self-loop doesn't crash, `.obsidian/` and the external URL are excluded,
 etc.) — then spot-check against a real vault too.
 
-## Phase 3 — Graph model
+## Phase 3 — Graph model ✅
 
-Open design question to resolve as part of this phase, not before: does
-`petgraph::Graph` *replace* `ParsedVault` (`src/vault/mod.rs`) as the
-thing later phases (layout, rendering, query) operate on, or does
-`ParsedVault` stay as the parser's output with a separate conversion step
-producing the graph? Either is fine — just pick one deliberately rather
-than let it happen by accident.
+Design question resolved (see `CLAUDE.md` architecture section): `Note`
+becomes the node weight — `Graph<Note, ()>` — so path/tags/aliases travel
+with the graph instead of living in a second lookup structure. `ParsedVault`
+stays exactly what it is today, the parser's output type; a new
+`graph::build(ParsedVault) -> Graph<Note, ()>` is the one-time conversion
+step, owning the `Vec<Note>` index → `NodeIndex` mapping. Nothing later
+(layout, rendering, query) should need to reach back into `ParsedVault`.
 
-- [ ] Build a `petgraph::Graph` from the parsed notes/links
-- [ ] Basic traversal sanity check (e.g. neighbor count for a given note)
-- [ ] Verify self-loops convert cleanly — `~/vaults/obg-test/self-loop.md`
+- [x] Add `petgraph` to `Cargo.toml` (0.8.3, confirmed)
+- [x] `graph::build()`: convert `ParsedVault` into `Graph<Note, ()>`,
+      inserting nodes in `notes` order and edges from `edges` — dedupes
+      parallel edges between the same pair (a note linking to the same
+      target twice) since `petgraph::Graph` is a multigraph by default
+- [x] Basic traversal sanity check (e.g. neighbor count for a given note)
+      — unit tests in `src/graph/mod.rs`
+- [x] Verify self-loops convert cleanly — `~/vaults/obg-test/self-loop.md`
       already produces a real `Edge { from: i, to: i }` in `ParsedVault`
-      (not hypothetical, it's in the current fixture output), so this
-      needs an actual check against real data, not an assumption that
-      `petgraph` "just handles it"
+      (not hypothetical, it's in the current fixture output); covered by
+      a unit test and confirmed against the real fixture vault (`cargo
+      run -- ~/vaults/obg-test` doesn't panic, node/edge counts match
+      `ParsedVault`'s exactly — no duplicate-edge pairs exist in this
+      fixture, so the dedup path isn't exercised there, only by the
+      hand-built unit test)
 
 **Done when:** traversal calls return correct results for a known note,
 including the self-loop case.
@@ -109,6 +118,11 @@ First real visual milestone — prove the whole pipeline end-to-end.
 
 **Done when:** `obg /path/to/vault` renders a recognizable 3D graph shape
 in the terminal, once, no interaction yet.
+
+Note: `~/vaults/obg-test/self-loop.md`'s self-referencing edge (verified
+in Phase 3) has no visible geometry in a wireframe — a node linking to
+itself draws nothing. That's expected, not a rendering bug; don't spend
+time "fixing" it here.
 
 ## Phase 6 — Camera interaction
 

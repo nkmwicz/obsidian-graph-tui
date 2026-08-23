@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod graph;
 mod vault;
 
 use clap::Parser;
@@ -54,4 +55,8 @@ fn main() {
     println!("Edges: {}", parsed.edges.len());
     println!("Unresolved links: {}", parsed.unresolved_links);
     println!("Orphan notes: {}", parsed.orphan_count());
+
+    let graph = graph::build(parsed);
+    println!("Graph nodes: {}", graph.node_count());
+    println!("Graph edges: {}", graph.edge_count());
 }

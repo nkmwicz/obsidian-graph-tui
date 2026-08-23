@@ -59,6 +59,16 @@ of an Obsidian vault's note links — with a real graph model behind it
    neighborhoods). **Not Kùzu for v1** — deliberately deferred, see
    "Explicitly out of scope" below. Swappable later without touching the
    layout or rendering layers.
+   - **`ParsedVault` vs `petgraph::Graph` (resolved in Phase 3):** `Note`
+     (path/tags/aliases) is the node weight — `Graph<Note, ()>` — rather
+     than keeping `ParsedVault` alive as a second, parallel lookup
+     structure. `ParsedVault` (`src/vault/mod.rs`) stays exactly what it
+     already is: the parser's output type, nothing more. A one-time
+     `graph::build(ParsedVault) -> Graph<Note, ()>` owns the
+     `Vec<Note>` index → `NodeIndex` mapping. Everything from Phase 4
+     onward (layout, rendering, query) operates on the `petgraph::Graph`
+     and never reaches back into `ParsedVault` — metadata needed for
+     filtering (Phase 7) reads off the node weight, not a side table.
 3. **3D layout**: [`fdg-sim`](https://crates.io/crates/fdg-sim) — **not
    `fdg`**, that crate name doesn't exist on crates.io. `fdg-sim` 0.9.1 is
    the actual published crate (from the `grantshandy/fdg` GitHub repo's
@@ -206,9 +216,9 @@ match rather than letting them drift apart.
 
 ## Starting point for a fresh session
 
-Check `TODO.md` for the current phase. As of this writing Phases 0–2
-(hello world CLI, CLI args & config, vault parser) are done — next up is
-Phase 3 (`petgraph` graph model from the parser's node/edge list), then
-`fdg-sim` layout → one static `ratatui` Braille frame before adding
-physics tuning, camera interaction, or query features. That thin vertical
-slice is the thing to prove first.
+Check `TODO.md` for the current phase. As of this writing Phases 0–3
+(hello world CLI, CLI args & config, vault parser, `petgraph` graph model)
+are done — next up is Phase 4 (`fdg-sim` 3D layout), then one static
+`ratatui` Braille frame (Phase 5) before adding physics tuning, camera
+interaction, or query features. That thin vertical slice is the thing to
+prove first.
